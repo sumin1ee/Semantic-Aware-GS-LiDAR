@@ -1,0 +1,29 @@
+scene_type: "NuScenes"
+resolution_scales: [1, 2, 4]
+cam_num: 2
+eval: True
+num_pts: 1000000
+nuscenes_version: "v1.0-trainval"
+nuscenes_split: "train"
+scene_name: "scene-0103"
+start_frame: 0
+end_frame: -1
+vfov: [-31.0, 10.0]
+hfov: [-90.0, 90.0]
+hw: [32, 1024]
+time_duration: [-0.5, 0.5]
+test_iterations: [3000, 7000, 15000, 30000]
+random_init_point: 0
+dynamic: False
+sky_depth: False
+lambda_lidar: 10.0
+lambda_lidar_median: 10.0
+lambda_intensity: 0.05
+lambda_intensity_sh: 0.05
+lambda_raydrop: 0.05
+lambda_smooth: 0.001
+lambda_chamfer: 0.1
+lambda_distortion: 0.1
+lambda_normal_consistency: 0.1
+lidar_decay: 0.0
+

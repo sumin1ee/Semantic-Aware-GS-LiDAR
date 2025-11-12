@@ -8,6 +8,9 @@ shuffle: True
 median_depth: False
 lambda_distortion: 0.0
 sequence_id: null  # for kitti-360
+scene_name: null  # for nuScenes
+nuscenes_version: "v1.0-trainval"
+nuscenes_split: "train"
 intensity_lr: 0.1
 lambda_lidar_median: 0.0
 lambda_lidar_dssim: 0.0

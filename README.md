@@ -75,6 +75,36 @@ data
         └── transforms_{sequence_id}_all.json
 ```
 
+# nuScenes dataset
+We support nuScenes LiDAR training via the new `NuScenes` scene loader. The expected layout is:
+
+```bash
+Semantic-Aware-GS-LiDAR
+└── data
+    └── nuscenes -> /data/nuscenes  # symbolic link to the official nuScenes dataroot
+```
+
+1. Create the symbolic link (adjust the absolute path to your local dataset if needed):
+   ```bash
+   cd Semantic-Aware-GS-LiDAR
+   mkdir -p data
+   ln -s /path/to/nuscenes data/nuscenes
+   ```
+2. Select a scene (e.g. `scene-0103`) and update `configs/nuscenes_nvs.yaml`:
+   ```bash
+   scene_name: "scene-0103"
+   source_path: "/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/nuscenes"
+   ```
+3. Launch training:
+   ```bash
+   CUDA_VISIBLE_DEVICES=0 python train.py \
+       --config configs/nuscenes_nvs.yaml \
+       source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/nuscenes \
+       model_path=eval_output/nuscenes_reconstruction/scene-0103
+   ```
+
+The loader expects `nuscenes-devkit` and `pyquaternion`, which are included in `requirements.txt`.
+
 
 ### Training
 ```
