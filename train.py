@@ -27,7 +27,7 @@ from torchvision.utils import make_grid, save_image
 import numpy as np
 from omegaconf import OmegaConf
 from utils.graphics_utils import depth_to_normal
-from utils.metrics_utils import DepthMeter, PointsMeter, RaydropMeter, IntensityMeter
+from utils.metrics_utils import DepthMeter, PointsMeter, RaydropMeter, IntensityMeter, SemanticMeter
 from chamfer.chamfer3D.dist_chamfer_3D import chamfer_3DDist
 from scene.unet import UNet
 
@@ -151,7 +151,7 @@ def training(args):
     if args.test_only or first_iter == args.iterations:
         with torch.no_grad():
             complete_eval(first_iter, args.test_iterations, scene, render, (args, background),
-                          {}, env_map=lidar_raydrop_prior)
+                          {}, env_map=lidar_raydrop_prior, semantic_head=semantic_head)
             return
 
     iter_start = torch.cuda.Event(enable_timing=True)
@@ -390,7 +390,7 @@ def training(args):
             log_dict['total_points'] = gaussians.get_xyz.shape[0]
             # Log and save
             complete_eval(iteration, args.test_iterations, scene, render, (args, background),
-                          log_dict, env_map=lidar_raydrop_prior)
+                          log_dict, env_map=lidar_raydrop_prior, semantic_head=semantic_head)
 
             # Densification
             if iteration > args.densify_until_iter * args.time_split_frac:
@@ -496,7 +496,7 @@ def training(args):
                     )
 
 
-def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderArgs, log_dict, env_map=None):
+def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderArgs, log_dict, env_map=None, semantic_head=None):
     if iteration in test_iterations or iteration == 1:
         scale = scene.resolution_scales[scene.scale_index]
         if iteration < args.iterations:
@@ -516,6 +516,18 @@ def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderAr
         h //= scale
         w //= scale
 
+        semantic_eval = (
+            semantic_head is not None
+            and getattr(args, "semantic_num_classes", None) is not None
+            and getattr(args, "lambda_semantic", 0.0) > 0
+        )
+        semantic_ignore_index = getattr(args, "semantic_ignore_index", -1)
+        semantic_class_count = getattr(args, "semantic_num_classes", 0)
+        semantic_mode = None
+        if semantic_eval:
+            semantic_mode = semantic_head.training
+            semantic_head.eval()
+
         metrics = [
             RaydropMeter(),
             IntensityMeter(scale=1),  # for intensity sh
@@ -529,6 +541,10 @@ def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderAr
             if config['cameras'] and len(config['cameras']) > 0:
                 for metric in metrics:
                     metric.clear()
+                if semantic_eval:
+                    semantic_meter = SemanticMeter(num_classes=semantic_class_count, ignore_index=semantic_ignore_index)
+                else:
+                    semantic_meter = None
 
                 outdir = os.path.join(args.model_path, "eval", config['name'] + f"_{iteration}" + "_render")
                 os.makedirs(outdir, exist_ok=True)
@@ -537,8 +553,13 @@ def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderAr
                     cam_front = config['cameras'][idx * 2]
                     cam_back = config['cameras'][idx * 2 + 1]
 
-                    depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano \
-                        = render_range_map(args, cam_front, cam_back, scene.gaussians, renderFunc, renderArgs, env_map, [h, w])
+                    if semantic_eval:
+                        depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano, semantic_pred_pano, gt_semantic_pano = \
+                            render_range_map(args, cam_front, cam_back, scene.gaussians, renderFunc, renderArgs, env_map, [h, w],
+                                             render_semantic=True, semantic_head=semantic_head, semantic_ignore_index=semantic_ignore_index)
+                    else:
+                        depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano \
+                            = render_range_map(args, cam_front, cam_back, scene.gaussians, renderFunc, renderArgs, env_map, [h, w])
 
                     raydrop_pano_mask = torch.where(raydrop_pano > 0.5, 1, 0)
                     gt_raydrop_pano = torch.where(gt_depth_pano > 0, 0, 1)
@@ -559,6 +580,21 @@ def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderAr
                             visualize_depth(raydrop_pano_mask, near=0.01, far=1),
                             visualize_depth(gt_depth_pano, scale_factor=args.scale_factor),
                             visualize_depth(gt_raydrop_pano, near=0.01, far=1)]
+
+                    if semantic_eval and semantic_meter is not None:
+                        semantic_meter.update(semantic_pred_pano, gt_semantic_pano)
+                        max_class_index = max(semantic_class_count - 1, 1)
+                        semantic_pred_vis = semantic_pred_pano.clone().float()
+                        semantic_pred_vis[semantic_pred_pano == semantic_ignore_index] = 0
+                        semantic_pred_vis = semantic_pred_vis / max_class_index
+                        semantic_gt_vis = gt_semantic_pano.clone().float()
+                        semantic_gt_vis[gt_semantic_pano == semantic_ignore_index] = 0
+                        semantic_gt_vis = semantic_gt_vis / max_class_index
+                        grid.extend([
+                            visualize_depth(semantic_pred_vis, near=0.0, far=1.0),
+                            visualize_depth(semantic_gt_vis, near=0.0, far=1.0)
+                        ])
+
                     grid = make_grid(grid, nrow=2)
                     save_image(grid, os.path.join(outdir, f"{cam_front.colmap_id:03d}.png"))
 
@@ -582,15 +618,23 @@ def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderAr
                 C_D_mean, F_score_mean = metrics[4].measure().astype(float)
                 C_D_median, F_score_median = metrics[5].measure().astype(float)
 
+                metrics_payload = {"split": config['name'], "iteration": iteration,
+                                   "Ray drop": {"RMSE": RMSE, "Acc": Acc, "F1": F1},
+                                   "Point Cloud mix": {"C-D": C_D_mix, "F-score": F_score_mix},
+                                   "Point Cloud mean": {"C-D": C_D_mean, "F-score": F_score_mean},
+                                   "Point Cloud median": {"C-D": C_D_median, "F-score": F_score_median},
+                                   "Depth": {"RMSE": rmse_d, "MedAE": medae_d, "LPIPS": lpips_loss_d, "SSIM": ssim_d, "PSNR": psnr_d},
+                                   "Intensity SH": {"RMSE": rmse_i_sh, "MedAE": medae_i_sh, "LPIPS": lpips_loss_i_sh, "SSIM": ssim_i_sh, "PSNR": psnr_i_sh}}
+
+                if semantic_eval and semantic_meter is not None:
+                    semantic_acc, semantic_miou = semantic_meter.measure()
+                    metrics_payload["Semantic"] = {"Acc": semantic_acc, "mIoU": semantic_miou}
+
                 with open(os.path.join(outdir, "metrics.json"), "w") as f:
-                    json.dump({"split": config['name'], "iteration": iteration,
-                               "Ray drop": {"RMSE": RMSE, "Acc": Acc, "F1": F1},
-                               "Point Cloud mix": {"C-D": C_D_mix, "F-score": F_score_mix},
-                               "Point Cloud mean": {"C-D": C_D_mean, "F-score": F_score_mean},
-                               "Point Cloud median": {"C-D": C_D_median, "F-score": F_score_median},
-                               "Depth": {"RMSE": rmse_d, "MedAE": medae_d, "LPIPS": lpips_loss_d, "SSIM": ssim_d, "PSNR": psnr_d},
-                               "Intensity SH": {"RMSE": rmse_i_sh, "MedAE": medae_i_sh, "LPIPS": lpips_loss_i_sh, "SSIM": ssim_i_sh, "PSNR": psnr_i_sh},
-                               }, f, indent=1)
+                    json.dump(metrics_payload, f, indent=1)
+
+        if semantic_eval and semantic_mode is not None and semantic_mode:
+            semantic_head.train()
 
         torch.cuda.empty_cache()
 

@@ -488,3 +488,50 @@ class IntensityMeter:
 
     def report(self):
         return f"Inten_error = {self.measure()}"
+
+
+class SemanticMeter:
+    def __init__(self, num_classes: int, ignore_index: int = -1):
+        self.num_classes = num_classes
+        self.ignore_index = ignore_index
+        self.confusion = np.zeros((num_classes, num_classes), dtype=np.int64)
+
+    def clear(self):
+        self.confusion.fill(0)
+
+    @staticmethod
+    def _to_numpy(tensor):
+        if torch.is_tensor(tensor):
+            tensor = tensor.detach().cpu().numpy()
+        return tensor
+
+    def update(self, preds, truths):
+        preds = self._to_numpy(preds).reshape(-1)
+        truths = self._to_numpy(truths).reshape(-1)
+
+        valid_mask = truths != self.ignore_index
+        preds = preds[valid_mask]
+        truths = truths[valid_mask]
+        if truths.size == 0:
+            return
+
+        combined = truths * self.num_classes + preds
+        counts = np.bincount(combined, minlength=self.num_classes ** 2)
+        self.confusion += counts.reshape(self.num_classes, self.num_classes)
+
+    def measure(self):
+        total = self.confusion.sum()
+        if total == 0:
+            return 0.0, 0.0
+
+        diag = np.diag(self.confusion)
+        accuracy = diag.sum() / total
+
+        row_sum = self.confusion.sum(axis=1)
+        col_sum = self.confusion.sum(axis=0)
+        denom = row_sum + col_sum - diag
+        valid = denom > 0
+        iou = np.zeros(self.num_classes, dtype=np.float64)
+        iou[valid] = diag[valid] / denom[valid]
+        miou = iou[valid].mean() if valid.any() else 0.0
+        return float(accuracy), float(miou)

@@ -168,7 +168,8 @@ def render(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Te
     return result
 
 
-def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, renderFunc, renderArgs, env_map, hw, render_semantic=False):
+def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, renderFunc, renderArgs, env_map, hw,
+                     render_semantic=False, semantic_head=None, semantic_ignore_index=-1):
     assert cam_front.towards == "forward" and cam_back.towards == "backward"
     assert cam_front.colmap_id + args.frames == cam_back.colmap_id
 
@@ -183,7 +184,8 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
     gt_intensity_pano = torch.zeros([1, h, w * 2]).cuda()
 
     if render_semantic:
-        semantic_pano = torch.zeros([1, h, w * 2]).cuda()
+        semantic_pred_pano = torch.full([1, h, w * 2], fill_value=semantic_ignore_index, device="cuda", dtype=torch.long)
+        gt_semantic_pano = torch.full([1, h, w * 2], fill_value=semantic_ignore_index, device="cuda", dtype=torch.long)
 
     for idx, viewpoint in enumerate([cam_front, cam_back]):
         depth_gt = viewpoint.pts_depth
@@ -199,7 +201,22 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
         var_quantile = depth_var.median() * 10
 
         if render_semantic:
-            rendered_semantic = render_pkg['semantic']
+            gt_semantic = getattr(viewpoint, "pts_semantic", None)
+            if gt_semantic is not None:
+                gt_semantic = gt_semantic.long()
+                if gt_semantic.dim() == 3 and gt_semantic.shape[0] == 1:
+                    gt_semantic = gt_semantic.squeeze(0)
+            else:
+                gt_semantic = torch.full((h, w), fill_value=semantic_ignore_index, device="cuda", dtype=torch.long)
+
+            if "semantic" in render_pkg and semantic_head is not None:
+                semantic_feature = render_pkg["semantic"].unsqueeze(0)
+                semantic_logits = semantic_head(semantic_feature)
+                semantic_pred = semantic_logits.argmax(dim=1).squeeze(0)
+            else:
+                semantic_pred = torch.full_like(gt_semantic, fill_value=semantic_ignore_index)
+            semantic_pred_exp = semantic_pred.unsqueeze(0)
+            gt_semantic_exp = gt_semantic.unsqueeze(0)
 
         depth_mix = torch.zeros_like(depth)
         depth_mix[depth_var > var_quantile] = depth_median[depth_var > var_quantile]
@@ -227,7 +244,8 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
             raydrop_pano[:, :, breaks[1]:breaks[2]] = raydrop_render
 
             if render_semantic:
-                semantic_pano[:, :, breaks[1]:breaks[2]] = rendered_semantic
+                semantic_pred_pano[:, :, breaks[1]:breaks[2]] = semantic_pred_exp
+                gt_semantic_pano[:, :, breaks[1]:breaks[2]] = gt_semantic_exp
             continue
         else:
             depth_pano[:, :, breaks[2]:breaks[3]] = depth[:, :, 0:(breaks[3] - breaks[2])]
@@ -246,10 +264,13 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
             raydrop_pano[:, :, breaks[0]:breaks[1]] = raydrop_render[:, :, (w - breaks[1] + breaks[0]):w]
 
             if render_semantic:
-                semantic_pano[:, :, breaks[2]:breaks[3]] = rendered_semantic[:, :, 0:(breaks[3] - breaks[2])]
-                semantic_pano[:, :, breaks[0]:breaks[1]] = rendered_semantic[:, :, (w - breaks[1] + breaks[0]):w]
-                
+                semantic_pred_pano[:, :, breaks[2]:breaks[3]] = semantic_pred_exp[:, :, 0:(breaks[3] - breaks[2])]
+                semantic_pred_pano[:, :, breaks[0]:breaks[1]] = semantic_pred_exp[:, :, (w - breaks[1] + breaks[0]):w]
+
+                gt_semantic_pano[:, :, breaks[2]:breaks[3]] = gt_semantic_exp[:, :, 0:(breaks[3] - breaks[2])]
+                gt_semantic_pano[:, :, breaks[0]:breaks[1]] = gt_semantic_exp[:, :, (w - breaks[1] + breaks[0]):w]
+
     if render_semantic:
-        return depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano, semantic_pano
+        return depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano, semantic_pred_pano, gt_semantic_pano
     else:
         return depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano
