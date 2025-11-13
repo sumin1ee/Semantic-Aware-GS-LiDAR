@@ -12,9 +12,19 @@ import torch
 from torch.utils.cpp_extension import load
 
 parent_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diff-gaussian-rasterization-2d")
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+os.environ['TORCH_CUDA_ARCH_LIST'] = '8.6'
+
 _C = load(
     name='diff_gaussian_rasterization',
-    extra_cuda_cflags=["-I " + os.path.join(parent_dir, "third_party/glm/"), "-g"],
+    extra_cuda_cflags=[
+        "-I " + os.path.join(parent_dir, "third_party/glm/"), 
+        "-g", "--expt-relaxed-constexpr", 
+        "-Xcompiler", "-fPIC",
+        "--use_fast_math"
+    ],
+    extra_cflags=["-O2"],
     sources=[
         os.path.join(parent_dir, "cuda_rasterizer/rasterizer_impl.cu"),
         os.path.join(parent_dir, "cuda_rasterizer/forward.cu"),

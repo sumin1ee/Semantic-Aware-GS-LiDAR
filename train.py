@@ -226,9 +226,20 @@ def training(args):
                 if gt_semantic.dim() == 2:
                     gt_semantic = gt_semantic.unsqueeze(0)
 
-                valid_mask = torch.ones_like(gt_semantic, dtype=torch.bool)
-                if semantic_ignore_index is not None:
-                    valid_mask = gt_semantic != semantic_ignore_index
+                effective_ignore_index = semantic_ignore_index if semantic_ignore_index is not None else -100
+
+                num_classes = getattr(args, "semantic_num_classes", None)
+                needs_clone = (gt_semantic < 0).any() or (num_classes is not None and (gt_semantic >= num_classes).any())
+                if needs_clone:
+                    gt_semantic = gt_semantic.clone()
+                    if (gt_semantic < 0).any():
+                        gt_semantic[gt_semantic < 0] = effective_ignore_index
+                    if num_classes is not None:
+                        high_mask = gt_semantic >= num_classes
+                        if high_mask.any():
+                            gt_semantic[high_mask] = effective_ignore_index
+
+                valid_mask = gt_semantic != effective_ignore_index
 
                 if valid_mask.any():
                     semantic_input = rendered_semantic.unsqueeze(0)
@@ -236,8 +247,7 @@ def training(args):
                     ce_kwargs = {}
                     if semantic_class_weights is not None:
                         ce_kwargs["weight"] = semantic_class_weights
-                    if semantic_ignore_index is not None:
-                        ce_kwargs["ignore_index"] = semantic_ignore_index
+                    ce_kwargs["ignore_index"] = effective_ignore_index
                     semantic_loss = F.cross_entropy(semantic_logits, gt_semantic, **ce_kwargs)
                     with torch.no_grad():
                         eval_mask = valid_mask
@@ -377,8 +387,12 @@ def training(args):
         iter_end.record()
 
         with torch.no_grad():
-            for key in (['loss', "loss_l1", "psnr"] if not args.only_velodyne else ['loss']):
-                ema_dict_for_log[key] = 0.4 * log_dict[key] + 0.6 * ema_dict_for_log[key]
+            keys_for_ema = ['loss', "loss_l1", "psnr"] if not args.only_velodyne else ['loss']
+            for key in keys_for_ema:
+                value = log_dict.get(key, None)
+                if value is None:
+                    continue
+                ema_dict_for_log[key] = 0.4 * value + 0.6 * ema_dict_for_log[key]
 
             if iteration % 10 == 0:
                 postfix = {k[5:] if k.startswith("loss_") else k: f"{ema_dict_for_log[k]:.{5}f}" for k, v in ema_dict_for_log.items()}

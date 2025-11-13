@@ -11,6 +11,7 @@
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
+#define MAX_FEATURES 50
 
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
@@ -188,7 +189,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_depths[BLOCK_SIZE];
-	__shared__ float collected_features[13 * BLOCK_SIZE];
+	__shared__ float collected_features[MAX_FEATURES * BLOCK_SIZE];
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
@@ -205,7 +206,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 	const int median_contributor = inside ? n_contrib[pix_id + H * W] : 0;
 
 	float accum_rec[C] = {0};
-	float accum_feature_rec[13 + 3] = {0};
+	float accum_feature_rec[MAX_FEATURES + 3] = {0};
 	float dL_dpixel[C] = {0};
 	float dL_dfeature[13] = {0};
 	float dL_depth = 0;
@@ -241,7 +242,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 
 	float last_alpha = 0;
 	float last_color[C] = {0};
-	float last_feature[13] = {0};
+	float last_feature[MAX_FEATURES] = {0};
 	float last_depth = 0;
 
 	// Gradient of pixel coordinate w.r.t. normalized

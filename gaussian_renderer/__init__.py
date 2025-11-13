@@ -103,6 +103,7 @@ def render(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Te
 
     if len(feature_list) > 0:
         features = torch.cat(feature_list, dim=1)
+        features = features.to(means3D.device).to(means3D.dtype).contiguous()
         S_other = features.shape[1]
     else:
         features = torch.zeros_like(means3D[:, :0])
@@ -208,6 +209,18 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
                     gt_semantic = gt_semantic.squeeze(0)
             else:
                 gt_semantic = torch.full((h, w), fill_value=semantic_ignore_index, device="cuda", dtype=torch.long)
+
+            effective_ignore_index = semantic_ignore_index if semantic_ignore_index is not None else -100
+            num_classes = getattr(args, "semantic_num_classes", None)
+            needs_clone = (gt_semantic < 0).any() or (num_classes is not None and (gt_semantic >= num_classes).any())
+            if needs_clone:
+                gt_semantic = gt_semantic.clone()
+                if (gt_semantic < 0).any():
+                    gt_semantic[gt_semantic < 0] = effective_ignore_index
+                if num_classes is not None:
+                    high_mask = gt_semantic >= num_classes
+                    if high_mask.any():
+                        gt_semantic[high_mask] = effective_ignore_index
 
             if "semantic" in render_pkg and semantic_head is not None:
                 semantic_feature = render_pkg["semantic"].unsqueeze(0)
