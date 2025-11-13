@@ -42,6 +42,8 @@ class GaussianModel:
 
         self.intensity_activation = torch.sigmoid
 
+        self.semantic_feature_activation = torch.nn.functional.relu
+
     def __init__(self, args):
         self.init_opa = 0.05
         self.active_sh_degree = 0
@@ -57,6 +59,9 @@ class GaussianModel:
         self._velocity = torch.empty(0)
 
         self._intensity = torch.empty(0)
+        self._semantic_feature = torch.empty(0)
+
+        self.semantic_dim = args.semantic_dim
 
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
@@ -94,6 +99,7 @@ class GaussianModel:
             self._scaling_t,
             self._velocity,
             self._intensity,
+            self._semantic_feature,
             self.max_radii2D,
             self.xyz_gradient_accum,
             self.xyz_gradient_accum_abs,
@@ -117,6 +123,7 @@ class GaussianModel:
          self._scaling_t,
          self._velocity,
          self._intensity,
+         self._semantic_feature,
          self.max_radii2D,
          xyz_gradient_accum,
          xyz_gradient_accum_abs,
@@ -177,6 +184,10 @@ class GaussianModel:
     @property
     def get_intensity(self):
         return self.intensity_activation(self._intensity)
+
+    @property
+    def get_semantic_feature(self):
+        return self.semantic_feature_activation(self._semantic_feature)
 
     @property
     def get_max_sh_channels(self):
@@ -263,6 +274,20 @@ class GaussianModel:
 
         intensities = inverse_sigmoid(0.01 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda"))
 
+        # --------------------------------------------------------------
+        # Semantic feature initialization
+        # Each Gaussian gets a learnable latent semantic embedding.
+        # Shape: (N_points, semantic_dim)
+        # We use small Gaussian noise to break symmetry.
+        # --------------------------------------------------------------
+        semantic_features = torch.empty(
+            fused_point_cloud.shape[0],
+            self.semantic_dim,
+            device="cuda",
+            dtype=torch.float,
+        )
+        semantic_features.normal_(mean=0.0, std=1e-2)
+
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True))
         self._features_rest = nn.Parameter(features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True))
@@ -274,7 +299,8 @@ class GaussianModel:
         self._scaling_t = nn.Parameter(scales_t.requires_grad_(True))
         self._velocity = nn.Parameter(velocity.requires_grad_(True))
         self._intensity = nn.Parameter(intensities.requires_grad_(True))
-
+        self._semantic_feature = nn.Parameter(semantic_features.requires_grad_(True))
+    
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -292,6 +318,7 @@ class GaussianModel:
             {'params': [self._t], 'lr': training_args.t_lr_init, "name": "t"},
             {'params': [self._scaling_t], 'lr': training_args.scaling_t_lr, "name": "scaling_t"},
             {'params': [self._intensity], 'lr': training_args.intensity_lr, "name": "intensity"},
+            {'params': [self._semantic_feature], 'lr': training_args.semantic_feature_lr, "name": "semantic_feature"},
         ]
 
         if training_args.dynamic:
@@ -370,6 +397,7 @@ class GaussianModel:
         self._rotation = optimizable_tensors["rotation"]
 
         self._intensity = optimizable_tensors["intensity"]
+        self._semantic_feature = optimizable_tensors["semantic_feature"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
         self.xyz_gradient_accum_abs = self.xyz_gradient_accum_abs[valid_points_mask]
@@ -412,7 +440,7 @@ class GaussianModel:
         return optimizable_tensors
 
     def densification_postfix(self, new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
-                              new_rotation, new_t, new_scaling_t, new_velocity, new_intensity):
+                              new_rotation, new_t, new_scaling_t, new_velocity, new_intensity, new_semantic_feature):
         d = {"xyz": new_xyz,
              "f_dc": new_features_dc,
              "f_rest": new_features_rest,
@@ -422,7 +450,8 @@ class GaussianModel:
              "t": new_t,
              "scaling_t": new_scaling_t,
              "velocity": new_velocity,
-             "intensity": new_intensity
+             "intensity": new_intensity,
+             "semantic_feature": new_semantic_feature
              }
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
@@ -440,6 +469,7 @@ class GaussianModel:
             self._velocity = optimizable_tensors['velocity']
 
         self._intensity = optimizable_tensors['intensity']
+        self._semantic_feature = optimizable_tensors['semantic_feature']
 
         self.t_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
@@ -488,6 +518,8 @@ class GaussianModel:
 
         new_intensity = self._intensity[selected_pts_mask].repeat(N, 1)
 
+        new_semantic_feature = self._semantic_feature[selected_pts_mask].repeat(N, 1)
+
         stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
         means = torch.zeros((stds.size(0), 3), device="cuda")
         samples = torch.normal(mean=means, std=stds)
@@ -526,7 +558,7 @@ class GaussianModel:
                 self.get_scaling_t[selected_pts_mask].repeat(N, 1))
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation,
-                                   new_t, new_scaling_t, new_velocity, new_intensity)
+                                   new_t, new_scaling_t, new_velocity, new_intensity, new_semantic_feature)
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
@@ -563,9 +595,10 @@ class GaussianModel:
         new_velocity = self._velocity[selected_pts_mask]
 
         new_intensity = self._intensity[selected_pts_mask]
+        new_semantic_feature = self._semantic_feature[selected_pts_mask]
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
-                                   new_rotation, new_t, new_scaling_t, new_velocity, new_intensity)
+                                   new_rotation, new_t, new_scaling_t, new_velocity, new_intensity, new_semantic_feature)
 
     def densify_and_prune(self, max_grad, max_grad_abs, min_opacity, extent, max_screen_size, max_grad_t=None, prune_only=False):
         prune_mask = self.max_radii2D < 0.707

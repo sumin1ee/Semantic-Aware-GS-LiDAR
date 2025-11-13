@@ -1,3 +1,4 @@
+# Data Config
 scene_type: "NuScenes"
 resolution_scales: [1, 2, 4]
 cam_num: 2
@@ -8,6 +9,8 @@ nuscenes_split: "train"
 scene_name: "scene-0103"
 start_frame: 0
 end_frame: -1
+
+# LiDAR Config
 vfov: [-31.0, 10.0]
 hfov: [-90.0, 90.0]
 hw: [32, 1024]
@@ -16,6 +19,12 @@ test_iterations: [3000, 7000, 15000, 30000]
 random_init_point: 0
 dynamic: False
 sky_depth: False
+
+# Optimization Config
+iterations: 30000
+densify_until_iter: 15000
+densify_grad_threshold: 1e-4
+sh_increase_interval: 2000
 lambda_lidar: 10.0
 lambda_lidar_median: 10.0
 lambda_intensity: 0.05

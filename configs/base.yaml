@@ -121,3 +121,6 @@ lambda_v_reg: 0.0
 lambda_lidar: 0.1
 lidar_decay: 1.0
 lambda_v_smooth: 0.0
+
+# Added for Semantic-Aware-GS-LiDAR
+semantic_feature_lr: 0.001

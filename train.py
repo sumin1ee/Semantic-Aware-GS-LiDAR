@@ -646,6 +646,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_only", action="store_true")
     parser.add_argument("--median_depth", action="store_true")
     parser.add_argument("--show_log", action="store_true")
+    parser.add_argument("--semantic_dim", type=int, default=16)
     args_read, _ = parser.parse_known_args()
 
     base_conf = OmegaConf.load(args_read.base_config)
