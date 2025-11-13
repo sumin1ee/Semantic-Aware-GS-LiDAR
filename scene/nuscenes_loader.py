@@ -81,6 +81,31 @@ def _load_lidar_points(file_path: str) -> Tuple[np.ndarray, np.ndarray]:
     return points, intensity
 
 
+def _load_lidar_semantics(nusc: NuScenes, sample_data_token: str) -> np.ndarray:
+    """Load per-point semantic labels for a nuScenes LIDAR_TOP sample.
+
+    Args:
+        nusc: Initialized nuScenes API instance.
+        sample_data_token: Token referencing the LIDAR_TOP sample_data entry.
+
+    Returns:
+        Semantic label array of shape ``(N,)`` with ``int64`` dtype. If the dataset does not
+        provide lidar segmentation for the sample, an empty array is returned.
+    """
+    sample_data = nusc.get("sample_data", sample_data_token)
+    lidarseg_token = sample_data.get("lidarseg_token", "")
+    if lidarseg_token in (None, ""):
+        return np.empty((0,), dtype=np.int64)
+
+    lidarseg_record = nusc.get("lidarseg", lidarseg_token)
+    lidarseg_path = os.path.join(nusc.dataroot, lidarseg_record["filename"])
+    if not os.path.isfile(lidarseg_path):
+        raise FileNotFoundError(f"nuScenes lidar segmentation file not found: {lidarseg_path}")
+
+    semantics = np.fromfile(lidarseg_path, dtype=np.uint8).astype(np.int64)
+    return semantics
+
+
 def readNuScenesInfo(args) -> SceneInfo:
     """Create a ``SceneInfo`` instance for nuScenes data.
 
@@ -136,9 +161,18 @@ def readNuScenesInfo(args) -> SceneInfo:
         lidar2global, global2lidar, timestamp = _compute_lidar_global_matrix(nusc, lidar_token)
 
         points_lidar, intensity = _load_lidar_points(file_path)
+        semantics = _load_lidar_semantics(nusc, lidar_token)
+
         mask = np.linalg.norm(points_lidar, axis=1) > 1.5
+        masked_size = int(mask.sum())
         points_lidar = points_lidar[mask]
         intensity = intensity[mask]
+        if semantics.size == mask.shape[0]:
+            semantics = semantics[mask]
+        elif semantics.size == masked_size:
+            semantics = semantics.copy()
+        else:
+            semantics = np.full(masked_size, fill_value=-1, dtype=np.int64)
 
         points_homo = np.concatenate([points_lidar, np.ones_like(points_lidar[:, :1])], axis=-1)
         points_world = (lidar2global @ points_homo.T).T[:, :3]
@@ -155,7 +189,8 @@ def readNuScenesInfo(args) -> SceneInfo:
         uid_base = frame_idx + start_idx
         cam_infos.append(CameraInfo(uid=uid_base, R=R.copy(), T=T.copy(),
                                     timestamp=timestamp, pointcloud_camera=points_cam.copy(),
-                                    intensity=intensity.copy(), towards="forward"))
+                                    intensity=intensity.copy(), towards="forward",
+                                    semantic=semantics.copy()))
 
         R_back = R @ np.array([[-1, 0, 0],
                                [0, 1, 0],
@@ -164,7 +199,8 @@ def readNuScenesInfo(args) -> SceneInfo:
         points_cam_back = points_world @ R_back + T_back
         cam_infos.append(CameraInfo(uid=uid_base + frames, R=R_back.copy(), T=T_back.copy(),
                                     timestamp=timestamp, pointcloud_camera=points_cam_back.copy(),
-                                    intensity=intensity.copy(), towards="backward"))
+                                    intensity=intensity.copy(), towards="backward",
+                                    semantic=semantics.copy()))
 
         if args.debug_cuda and frame_idx >= 15:
             break
