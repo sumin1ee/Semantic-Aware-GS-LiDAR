@@ -123,4 +123,5 @@ lidar_decay: 1.0
 lambda_v_smooth: 0.0
 
 # Added for Semantic-Aware-GS-LiDAR
+semantic_dim: 16  # Dimension of semantic feature vector
 semantic_feature_lr: 0.001

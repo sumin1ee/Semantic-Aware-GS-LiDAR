@@ -91,10 +91,11 @@ def training(args):
             viewpoint_stack = list(range(len(scene.getTrainCameras())))
         viewpoint_cam = scene.getTrainCameras()[viewpoint_stack.pop(randint(0, len(viewpoint_stack) - 1))]
 
-        # render v and t scale map
+        # render v, t scale map and semantic feature
         v = gaussians.get_inst_velocity
         t_scale = gaussians.get_scaling_t.clamp_max(2)
-        other = [t_scale, v]
+        semantic_feature = gaussians.get_semantic_feature  # [N, semantic_dim]
+        other = [t_scale, v, semantic_feature]
 
         if np.random.random() < args.lambda_self_supervision:
             time_shift = 3 * (np.random.random() - 0.5) * scene.time_interval
@@ -114,6 +115,8 @@ def training(args):
         feature = render_pkg['feature'] / alpha.clamp_min(EPS)
         t_map = feature[0:1]
         v_map = feature[1:4]
+        # Extract rendered semantic features
+        rendered_semantic = render_pkg.get('semantic', None)  # [semantic_dim, H, W] or None
 
         intensity_sh_map = render_pkg['intensity_sh']
         raydrop_map = render_pkg['raydrop']
@@ -646,7 +649,6 @@ if __name__ == "__main__":
     parser.add_argument("--test_only", action="store_true")
     parser.add_argument("--median_depth", action="store_true")
     parser.add_argument("--show_log", action="store_true")
-    parser.add_argument("--semantic_dim", type=int, default=16)
     args_read, _ = parser.parse_known_args()
 
     base_conf = OmegaConf.load(args_read.base_config)

@@ -130,13 +130,24 @@ def render(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Te
     rendered_other, rendered_normal = rendered_feature.split([S_other, 3], dim=0)
     rendered_normal = rendered_normal / (rendered_normal.norm(dim=0, keepdim=True) + 1e-8)
 
+    # Extract semantic features from rendered_other
+    # rendered_other contains: [t_scale (1), v (3), semantic_feature (semantic_dim)]
+    rendered_semantic = None
+    if S_other > 0:  # If semantic features are present
+        S_t = 1
+        S_v = 3
+        S_sem = S_other - S_t - S_v
+        if S_sem > 0:
+            rendered_semantic = rendered_other[S_t+S_v:S_t+S_v+S_sem]  # [semantic_dim, H, W]
+
+    
     if env_map is not None:
         lidar_raydrop_prior_from_envmap = env_map(viewpoint_camera.towards)
         rendered_raydrop = lidar_raydrop_prior_from_envmap + (1 - lidar_raydrop_prior_from_envmap) * rendered_raydrop
 
     # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
     # They will be excluded from value updates used in the splitting criteria.
-    return {
+    result = {
         "viewspace_points": screenspace_points,
         "visibility_filter": radii > 0,
         "radii": radii,
@@ -147,14 +158,17 @@ def render(viewpoint_camera: Camera, pc: GaussianModel, pipe, bg_color: torch.Te
         "distortion": rendered_depth[[2]],
         "depth_square": rendered_depth[[3]],
         "alpha": rendered_opacity,
-        "feature": rendered_other,
+        "feature": rendered_other, # full other [t, v, semantic]
         "normal": rendered_normal,
         "intensity_sh": rendered_intensity_sh,
         "raydrop": rendered_raydrop.clamp(0, 1)
     }
+    if rendered_semantic is not None:
+        result["semantic"] = rendered_semantic
+    return result
 
 
-def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, renderFunc, renderArgs, env_map, hw):
+def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, renderFunc, renderArgs, env_map, hw, render_semantic=False):
     assert cam_front.towards == "forward" and cam_back.towards == "backward"
     assert cam_front.colmap_id + args.frames == cam_back.colmap_id
 
@@ -168,6 +182,9 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
     gt_depth_pano = torch.zeros([1, h, w * 2]).cuda()
     gt_intensity_pano = torch.zeros([1, h, w * 2]).cuda()
 
+    if render_semantic:
+        semantic_pano = torch.zeros([1, h, w * 2]).cuda()
+
     for idx, viewpoint in enumerate([cam_front, cam_back]):
         depth_gt = viewpoint.pts_depth
         intensity_gt = viewpoint.pts_intensity
@@ -180,6 +197,9 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
         depth_var = render_pkg['depth_square'] - depth ** 2
         depth_median = render_pkg["depth_median"]
         var_quantile = depth_var.median() * 10
+
+        if render_semantic:
+            rendered_semantic = render_pkg['semantic']
 
         depth_mix = torch.zeros_like(depth)
         depth_mix[depth_var > var_quantile] = depth_median[depth_var > var_quantile]
@@ -206,6 +226,8 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
 
             raydrop_pano[:, :, breaks[1]:breaks[2]] = raydrop_render
 
+            if render_semantic:
+                semantic_pano[:, :, breaks[1]:breaks[2]] = rendered_semantic
             continue
         else:
             depth_pano[:, :, breaks[2]:breaks[3]] = depth[:, :, 0:(breaks[3] - breaks[2])]
@@ -222,5 +244,9 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
 
             raydrop_pano[:, :, breaks[2]:breaks[3]] = raydrop_render[:, :, 0:(breaks[3] - breaks[2])]
             raydrop_pano[:, :, breaks[0]:breaks[1]] = raydrop_render[:, :, (w - breaks[1] + breaks[0]):w]
+
+            if render_semantic:
+                semantic_pano[:, :, breaks[2]:breaks[3]] = rendered_semantic[:, :, 0:(breaks[3] - breaks[2])]
+                semantic_pano[:, :, breaks[0]:breaks[1]] = rendered_semantic[:, :, (w - breaks[1] + breaks[0]):w]
 
     return depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano
