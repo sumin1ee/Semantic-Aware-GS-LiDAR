@@ -115,8 +115,7 @@ def training(args):
         feature = render_pkg['feature'] / alpha.clamp_min(EPS)
         t_map = feature[0:1]
         v_map = feature[1:4]
-        # Extract rendered semantic features
-        rendered_semantic = render_pkg.get('semantic', None)  # [semantic_dim, H, W] or None
+        rendered_semantic = feature[4:]
 
         intensity_sh_map = render_pkg['intensity_sh']
         raydrop_map = render_pkg['raydrop']

@@ -248,5 +248,8 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
             if render_semantic:
                 semantic_pano[:, :, breaks[2]:breaks[3]] = rendered_semantic[:, :, 0:(breaks[3] - breaks[2])]
                 semantic_pano[:, :, breaks[0]:breaks[1]] = rendered_semantic[:, :, (w - breaks[1] + breaks[0]):w]
-
-    return depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano
+                
+    if render_semantic:
+        return depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano, semantic_pano
+    else:
+        return depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano
