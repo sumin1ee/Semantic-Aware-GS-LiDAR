@@ -37,6 +37,7 @@ def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
 
         pts_depth = np.zeros([1, h, w])
         pts_intensity = np.zeros([1, h, w])
+        pts_semantic = None
         point_camera = cam_info.pointcloud_camera
         x = point_camera[:, 0]
         y = point_camera[:, 1]
@@ -54,6 +55,12 @@ def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
         phi = (phi - HFOV_min) * w / (HFOV_max - HFOV_min)
         uvz = np.stack((theta, phi, r, intensity), 1)
 
+        semantic_values = cam_info.semantic
+        if semantic_values is not None:
+            semantic_values = semantic_values.reshape(-1)
+            uvz = np.concatenate((uvz, semantic_values[:, None]), axis=1)
+            pts_semantic = np.full([1, h, w], fill_value=-1, dtype=np.int64)
+
         uvz = uvz[uvz[:, 0] >= -0.5]
         uvz = uvz[uvz[:, 0] < h - 0.5]
         uvz = uvz[uvz[:, 1] >= -0.5]
@@ -63,18 +70,23 @@ def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
 
         for i in range(uv.shape[0]):
             x, y = uv[i]
-            if pts_depth[0, x, y] == 0:
-                pts_depth[0, x, y] = uvz[i, 2]
-                pts_intensity[0, x, y] = uvz[i, 3]
-            elif uvz[i, 2] < pts_depth[0, x, y]:
-                pts_depth[0, x, y] = uvz[i, 2]
-                pts_intensity[0, x, y] = uvz[i, 3]
+            depth_value = uvz[i, 2]
+            intensity_value = uvz[i, 3]
+            semantic_value = int(uvz[i, 4]) if semantic_values is not None else None
+            if pts_depth[0, x, y] == 0 or depth_value < pts_depth[0, x, y]:
+                pts_depth[0, x, y] = depth_value
+                pts_intensity[0, x, y] = intensity_value
+                if pts_semantic is not None:
+                    pts_semantic[0, x, y] = semantic_value
 
         pts_depth = torch.from_numpy(pts_depth).float().cuda()
         pts_intensity = torch.from_numpy(pts_intensity).float().cuda()
+        if pts_semantic is not None:
+            pts_semantic = torch.from_numpy(pts_semantic).long().cuda()
     else:
         pts_depth = None
         pts_intensity = None
+        pts_semantic = None
 
     return Camera(
         colmap_id=cam_info.uid,
@@ -88,6 +100,7 @@ def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
         resolution=resolution,
         pts_depth=pts_depth,
         pts_intensity=pts_intensity,
+        pts_semantic=pts_semantic,
         towards=cam_info.towards
     )
 

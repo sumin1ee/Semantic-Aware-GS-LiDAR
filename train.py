@@ -17,6 +17,7 @@ from random import randint
 from utils.loss_utils import psnr, ssim, inverse_depth_smoothness_loss_mask, tv_loss
 from gaussian_renderer import render, render_range_map
 from scene import Scene, GaussianModel, RayDropPrior
+from head.semantic_head import build_semantic_head
 from utils.general_utils import seed_everything, visualize_depth
 from utils.graphics_utils import pano_to_lidar
 from utils.system_utils import save_ply
@@ -45,6 +46,77 @@ def training(args):
 
     gaussians.training_setup(args)
 
+    semantic_head = None
+    semantic_optimizer = None
+    semantic_class_weights = None
+    semantic_ignore_index = getattr(args, "semantic_ignore_index", -1)
+
+    if getattr(args, "lambda_semantic", 0.0) > 0:
+        if not hasattr(args, "semantic_num_classes") or args.semantic_num_classes is None:
+            raise ValueError("`semantic_num_classes` must be specified when `lambda_semantic` is positive.")
+        if getattr(args, "semantic_dim", 0) <= 0:
+            raise ValueError("`semantic_dim` must be a positive integer when `lambda_semantic` is positive.")
+
+        head_type = getattr(args, "semantic_head_type", "conv")
+        norm_type = getattr(args, "semantic_norm_type", "bn")
+        if norm_type is None:
+            norm_type = "bn"
+        dropout_prob = getattr(args, "semantic_dropout", 0.0)
+        if dropout_prob is None:
+            dropout_prob = 0.0
+
+        semantic_kwargs = {
+            "norm_type": norm_type,
+            "dropout": dropout_prob,
+        }
+
+        if head_type.lower() in ("unet", "unet-style", "u-net"):
+            base_channels = getattr(args, "semantic_unet_base_channels", 64)
+            if base_channels is None:
+                base_channels = 64
+            depth_value = getattr(args, "semantic_unet_depth", 3)
+            if depth_value is None:
+                depth_value = 3
+            semantic_kwargs.update({
+                "base_channels": base_channels,
+                "depth": depth_value,
+            })
+        else:
+            hidden_cfg = getattr(args, "semantic_conv_hidden_dims", (128, 64))
+            if hidden_cfg is None:
+                hidden_dims = [128, 64]
+            elif isinstance(hidden_cfg, (int, float)):
+                hidden_dims = [int(hidden_cfg)]
+            else:
+                hidden_dims = [int(dim) for dim in list(hidden_cfg)]
+            semantic_kwargs.update({
+                "hidden_channels": hidden_dims,
+            })
+
+        semantic_head = build_semantic_head(
+            head_type=head_type,
+            in_channels=args.semantic_dim,
+            num_classes=args.semantic_num_classes,
+            **semantic_kwargs,
+        ).cuda()
+        semantic_head.train()
+
+        semantic_optimizer = torch.optim.Adam(
+            semantic_head.parameters(),
+            lr=getattr(args, "semantic_head_lr", 1e-3),
+            weight_decay=getattr(args, "semantic_head_weight_decay", 0.0),
+        )
+
+        class_weights_cfg = getattr(args, "semantic_class_weights", None)
+        if class_weights_cfg is not None:
+            semantic_class_weights = torch.tensor(
+                list(class_weights_cfg),
+                dtype=torch.float32,
+                device="cuda",
+            )
+            if semantic_class_weights.numel() != args.semantic_num_classes:
+                raise ValueError("`semantic_class_weights` length must match `semantic_num_classes`.")
+
     start_w, start_h = scene.getWH()
     lidar_raydrop_prior = RayDropPrior(h=start_h, w=start_w).cuda()
     lidar_raydrop_prior.training_setup(args)
@@ -58,6 +130,17 @@ def training(args):
                                                       os.path.basename(args.start_checkpoint).replace("chkpnt", "lidar_raydrop_prior_chkpnt"))
         (lidar_raydrop_prior_params, _) = torch.load(lidar_raydrop_prior_checkpoint)
         lidar_raydrop_prior.restore(lidar_raydrop_prior_params)
+
+        if semantic_head is not None:
+            semantic_head_checkpoint = os.path.join(
+                os.path.dirname(args.start_checkpoint),
+                os.path.basename(args.start_checkpoint).replace("chkpnt", "semantic_head_chkpnt"),
+            )
+            if os.path.exists(semantic_head_checkpoint):
+                semantic_state = torch.load(semantic_head_checkpoint, map_location="cuda")
+                semantic_head.load_state_dict(semantic_state["state_dict"])
+                if "iteration" in semantic_state:
+                    first_iter = semantic_state["iteration"]
 
         for i in range(first_iter // args.scale_increase_interval):
             scene.upScale()
@@ -82,6 +165,8 @@ def training(args):
     for iteration in progress_bar:
         iter_start.record()
         gaussians.update_learning_rate(iteration)
+        if semantic_optimizer is not None:
+            semantic_optimizer.zero_grad(set_to_none=True)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if iteration % args.sh_increase_interval == 0:
@@ -129,6 +214,40 @@ def training(args):
                 depth = alpha * depth + (1 - alpha) * sky_depth
 
         loss = 0
+        semantic_supervised = False
+
+        # Semantic loss
+        if args.lambda_semantic > 0 and semantic_head is not None and rendered_semantic.numel() > 0:
+            gt_semantic = getattr(viewpoint_cam, "pts_semantic", None)
+            if gt_semantic is not None:
+                gt_semantic = gt_semantic.long()
+                if gt_semantic.dim() == 3 and gt_semantic.shape[0] == 1:
+                    gt_semantic = gt_semantic.squeeze(0)
+                if gt_semantic.dim() == 2:
+                    gt_semantic = gt_semantic.unsqueeze(0)
+
+                valid_mask = torch.ones_like(gt_semantic, dtype=torch.bool)
+                if semantic_ignore_index is not None:
+                    valid_mask = gt_semantic != semantic_ignore_index
+
+                if valid_mask.any():
+                    semantic_input = rendered_semantic.unsqueeze(0)
+                    semantic_logits = semantic_head(semantic_input)
+                    ce_kwargs = {}
+                    if semantic_class_weights is not None:
+                        ce_kwargs["weight"] = semantic_class_weights
+                    if semantic_ignore_index is not None:
+                        ce_kwargs["ignore_index"] = semantic_ignore_index
+                    semantic_loss = F.cross_entropy(semantic_logits, gt_semantic, **ce_kwargs)
+                    with torch.no_grad():
+                        eval_mask = valid_mask
+                        preds = semantic_logits.detach().argmax(dim=1, keepdim=False)
+                        semantic_accuracy = (preds[eval_mask] == gt_semantic[eval_mask]).float().mean()
+                        log_dict['semantic_acc'] = semantic_accuracy.item()
+                    log_dict['loss_semantic'] = semantic_loss.item()
+                    loss += args.lambda_semantic * semantic_loss
+                    semantic_supervised = True
+
         if args.lambda_distortion > 0:
             lambda_dist = args.lambda_distortion if iteration > 3000 else 0.0
             distortion = render_pkg["distortion"]
@@ -297,6 +416,10 @@ def training(args):
             gaussians.optimizer.zero_grad(set_to_none=True)
             lidar_raydrop_prior.optimizer.step()
             lidar_raydrop_prior.optimizer.zero_grad(set_to_none=True)
+            if semantic_optimizer is not None:
+                if semantic_supervised:
+                    semantic_optimizer.step()
+                semantic_optimizer.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
 
             if iteration % args.vis_step == 0 or iteration == 1:
@@ -366,6 +489,11 @@ def training(args):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/ckpt/chkpnt" + str(iteration) + ".pth")
                 torch.save((lidar_raydrop_prior.capture(), iteration), scene.model_path + "/ckpt/lidar_raydrop_prior_chkpnt" + str(iteration) + ".pth")
+                if semantic_head is not None:
+                    torch.save(
+                        {"state_dict": semantic_head.state_dict(), "iteration": iteration},
+                        scene.model_path + "/ckpt/semantic_head_chkpnt" + str(iteration) + ".pth"
+                    )
 
 
 def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderArgs, log_dict, env_map=None):

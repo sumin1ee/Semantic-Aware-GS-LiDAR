@@ -20,6 +20,7 @@ class CameraInfo(NamedTuple):
     pointcloud_camera: np.array = None
     intensity: np.array = None
     towards: str = None
+    semantic: np.array = None
 
 
 class SceneInfo(NamedTuple):

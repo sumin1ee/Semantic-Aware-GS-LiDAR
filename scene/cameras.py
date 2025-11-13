@@ -19,7 +19,7 @@ class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, vfov=None, hfov=None, uid=0,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device="cuda", timestamp=0.0,
                  resolution=None, image_path=None,
-                 pts_depth=None, pts_intensity=None, towards=None
+                 pts_depth=None, pts_intensity=None, pts_semantic=None, towards=None
                  ):
         super(Camera, self).__init__()
 
@@ -45,6 +45,11 @@ class Camera(nn.Module):
 
         self.pts_depth = pts_depth.to(self.data_device) if pts_depth is not None else pts_depth
         self.pts_intensity = pts_intensity.to(self.data_device) if pts_intensity is not None else pts_intensity
+        if pts_semantic is not None:
+            pts_semantic = pts_semantic.to(self.data_device)
+            if pts_semantic.dtype != torch.long:
+                pts_semantic = pts_semantic.long()
+        self.pts_semantic = pts_semantic
 
         self.zfar = 1000.0
         self.znear = 0.01
