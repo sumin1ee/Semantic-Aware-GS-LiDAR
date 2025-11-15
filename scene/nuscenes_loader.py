@@ -92,18 +92,17 @@ def _load_lidar_semantics(nusc: NuScenes, sample_data_token: str) -> np.ndarray:
         Semantic label array of shape ``(N,)`` with ``int64`` dtype. If the dataset does not
         provide lidar segmentation for the sample, an empty array is returned.
     """
-    sample_data = nusc.get("sample_data", sample_data_token)
-    lidarseg_token = sample_data.get("lidarseg_token", "")
-    if lidarseg_token in (None, ""):
-        return np.empty((0,), dtype=np.int64)
-
-    lidarseg_record = nusc.get("lidarseg", lidarseg_token)
-    lidarseg_path = os.path.join(nusc.dataroot, lidarseg_record["filename"])
-    if not os.path.isfile(lidarseg_path):
+    lidarseg_records = [ls for ls in nusc.lidarseg if ls.get("sample_data_token") == sample_data_token]
+    if len(lidarseg_records) > 0:
+        lidarseg_record = lidarseg_records[0]
+        lidarseg_path = os.path.join(nusc.dataroot, lidarseg_record["filename"])
+        if os.path.isfile(lidarseg_path):
+            # Found lidarseg data even though token was missing
+            semantics = np.fromfile(lidarseg_path, dtype=np.uint8).astype(np.int64)
+            return semantics
+    else:
         raise FileNotFoundError(f"nuScenes lidar segmentation file not found: {lidarseg_path}")
 
-    semantics = np.fromfile(lidarseg_path, dtype=np.uint8).astype(np.int64)
-    return semantics
 
 
 def readNuScenesInfo(args) -> SceneInfo:
@@ -162,7 +161,6 @@ def readNuScenesInfo(args) -> SceneInfo:
 
         points_lidar, intensity = _load_lidar_points(file_path)
         semantics = _load_lidar_semantics(nusc, lidar_token)
-
         mask = np.linalg.norm(points_lidar, axis=1) > 1.5
         masked_size = int(mask.sum())
         points_lidar = points_lidar[mask]
@@ -172,7 +170,7 @@ def readNuScenesInfo(args) -> SceneInfo:
         elif semantics.size == masked_size:
             semantics = semantics.copy()
         else:
-            semantics = np.full(masked_size, fill_value=-1, dtype=np.int64)
+            semantics = np.full(masked_size, fill_value=-1, dtype=np.int64) # fill with -1 if size mismatch
 
         points_homo = np.concatenate([points_lidar, np.ones_like(points_lidar[:, :1])], axis=-1)
         points_world = (lidar2global @ points_homo.T).T[:, :3]

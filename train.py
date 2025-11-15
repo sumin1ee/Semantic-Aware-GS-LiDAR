@@ -161,6 +161,7 @@ def training(args):
 
     ema_dict_for_log = defaultdict(int)
     progress_bar = tqdm(range(first_iter + 1, args.iterations + 1), desc="Training progress", miniters=10)
+    loss_log_interval = getattr(args, "loss_log_interval", 50)
 
     for iteration in progress_bar:
         iter_start.record()
@@ -387,18 +388,26 @@ def training(args):
         iter_end.record()
 
         with torch.no_grad():
-            keys_for_ema = ['loss', "loss_l1", "psnr"] if not args.only_velodyne else ['loss']
+            base_keys = ['loss'] if args.only_velodyne else ['loss', "loss_l1", "psnr"]
+            loss_component_keys = sorted(k for k in log_dict.keys() if k.startswith("loss_"))
+            keys_for_ema = base_keys + [k for k in loss_component_keys if k not in base_keys]
             for key in keys_for_ema:
                 value = log_dict.get(key, None)
-                if value is None:
+                if value is None or not np.isfinite(value):
                     continue
                 ema_dict_for_log[key] = 0.4 * value + 0.6 * ema_dict_for_log[key]
 
             if iteration % 10 == 0:
-                postfix = {k[5:] if k.startswith("loss_") else k: f"{ema_dict_for_log[k]:.{5}f}" for k, v in ema_dict_for_log.items()}
+                postfix = {k[5:] if k.startswith("loss_") else k: f"{ema_dict_for_log[k]:.{5}f}" for k in sorted(ema_dict_for_log.keys())}
                 postfix["scale"] = scene.resolution_scales[scene.scale_index]
                 postfix["points_num"] = gaussians.get_xyz.shape[0]
                 progress_bar.set_postfix(postfix)
+
+            if loss_log_interval and ((iteration - first_iter) % loss_log_interval == 0 or iteration == first_iter + 1):
+                loss_components = {k: log_dict[k] for k in sorted(log_dict.keys()) if k.startswith("loss")}
+                if loss_components:
+                    components_str = ", ".join(f"{k}:{loss_components[k]:.6f}" for k in loss_components)
+                    progress_bar.write(f"[Iter {iteration:05d}] {components_str}")
 
             log_dict['iter_time'] = iter_start.elapsed_time(iter_end)
             log_dict['total_points'] = gaussians.get_xyz.shape[0]
