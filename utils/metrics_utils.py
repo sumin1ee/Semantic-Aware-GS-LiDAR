@@ -509,12 +509,20 @@ class SemanticMeter:
         preds = self._to_numpy(preds).reshape(-1)
         truths = self._to_numpy(truths).reshape(-1)
 
-        valid_mask = truths != self.ignore_index
+        # Filter out ignore_index and out-of-range values
+        valid_mask = (truths != self.ignore_index) & (truths >= 0) & (truths < self.num_classes)
+        # Also filter preds to ensure they are in valid range
+        valid_mask = valid_mask & (preds >= 0) & (preds < self.num_classes)
+        
         preds = preds[valid_mask]
         truths = truths[valid_mask]
         if truths.size == 0:
             return
 
+        # Ensure values are non-negative integers for bincount
+        preds = preds.astype(np.int64)
+        truths = truths.astype(np.int64)
+        
         combined = truths * self.num_classes + preds
         counts = np.bincount(combined, minlength=self.num_classes ** 2)
         self.confusion += counts.reshape(self.num_classes, self.num_classes)

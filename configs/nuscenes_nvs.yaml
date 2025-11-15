@@ -42,7 +42,7 @@ semantic_num_classes: 32
 semantic_head_type: "conv"
 semantic_conv_hidden_dims: [256, 128]
 semantic_dropout: 0.1
-semantic_ignore_index: 0
+semantic_ignore_index: -1
 semantic_head_lr: 0.001
 semantic_head_weight_decay: 0.0
 
