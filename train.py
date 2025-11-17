@@ -187,7 +187,6 @@ def training(args):
             time_shift = 3 * (np.random.random() - 0.5) * scene.time_interval
         else:
             time_shift = None
-        breakpoint()
         render_pkg = render(viewpoint_cam, gaussians, args, background, env_map=lidar_raydrop_prior, other=other, time_shift=time_shift, is_training=True)
 
         depth = render_pkg["depth"]
