@@ -182,11 +182,14 @@ def readNuScenesInfo(args) -> SceneInfo:
         normalized_time = args.time_duration[0] + (args.time_duration[1] - args.time_duration[0]) * frame_idx / max(frames - 1, 1)
         point_time.append(np.full((points_world.shape[0], 1), normalized_time, dtype=np.float32))
 
-        w2l = global2lidar
-        R = np.transpose(w2l[:3, :3])
+        w2l = np.array([0, -1, 0, 0,
+                        0, 0, -1, 0,
+                        1, 0, 0, 0,
+                        0, 0, 0, 1]).reshape(4, 4) @ global2lidar
+        R = np.transpose(w2l[:3, :3]) # This is the process for converting column-major to row-major
         T = w2l[:3, 3]
         points_cam = points_world @ R + T
-
+        
         uid_base = frame_idx + start_idx
         cam_infos.append(CameraInfo(uid=uid_base, R=R.copy(), T=T.copy(),
                                     timestamp=timestamp, pointcloud_camera=points_cam.copy(),
@@ -236,27 +239,16 @@ def readNuScenesInfo(args) -> SceneInfo:
     for idx, cam_info in enumerate(cam_infos):
         c2w = c2ws[idx]
         w2c = np.linalg.inv(c2w)
-        cam_info.R[:] = np.transpose(w2c[:3, :3])  # R is stored transposed due to 'glm' in CUDA code
+        cam_info.R[:] = np.transpose(w2c[:3, :3])
         cam_info.T[:] = w2c[:3, 3]
-        
-        if cam_info.pointcloud_camera is not None:
-            # Recalculate camera coordinates using transformed world points
-            # Each frame has 2 cameras (forward and backward), so frame_idx = idx // 2
-            frame_idx = idx // 2
-            if frame_idx < len(points_world_per_frame):
-                points_world_orig = points_world_per_frame[frame_idx]
-                # Apply transform to world points
-                points_world_homo = np.pad(points_world_orig, ((0, 0), (0, 1)), constant_values=1)
-                points_world_transformed = (points_world_homo @ transform.T)[:, :3]
-                # Recalculate camera coordinates using updated R and T
-                points_cam_transformed = points_world_transformed @ cam_info.R + cam_info.T
-                cam_info.pointcloud_camera[:] = points_cam_transformed
-
+        cam_info.pointcloud_camera[:] *= scale_factor
+    
     pointcloud = (np.pad(pointcloud, ((0, 0), (0, 1)), constant_values=1) @ transform.T)[:, :3]
     args.scale_factor = float(scale_factor)
 
     mod = args.cam_num
     test_stride = max(1, int(args.testhold))
+
     if args.eval:
         train_cam_infos = [c for idx, c in enumerate(cam_infos) if ((idx // mod) % test_stride) != 0]
         test_cam_infos = [c for idx, c in enumerate(cam_infos) if ((idx // mod) % test_stride) == 0]

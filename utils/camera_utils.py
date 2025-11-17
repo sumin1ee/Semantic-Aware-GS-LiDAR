@@ -83,7 +83,6 @@ def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
         pts_intensity = torch.from_numpy(pts_intensity).float().cuda()
         if pts_semantic is not None:
             pts_semantic = torch.from_numpy(pts_semantic).long().cuda()
-        breakpoint()
     else:
         pts_depth = None
         pts_intensity = None
