@@ -28,6 +28,7 @@ import numpy as np
 from omegaconf import OmegaConf
 from utils.graphics_utils import depth_to_normal
 from utils.metrics_utils import DepthMeter, PointsMeter, RaydropMeter, IntensityMeter, SemanticMeter
+from utils.semantic_mapping import load_semantic_label_mapping, colorize_semantic_tensor
 from chamfer.chamfer3D.dist_chamfer_3D import chamfer_3DDist
 from scene.unet import UNet
 
@@ -356,7 +357,6 @@ def training(args):
             cham_fn = chamfer_3DDist()
             pred_lidar = pano_to_lidar(depth * mask, args.vfov, args.hfov) / args.scale_factor
             gt_lidar = pano_to_lidar(pts_depth, args.vfov, args.hfov) / args.scale_factor
-            
             if iteration % 100 == 0:
                 print(f"  pred_lidar points: {pred_lidar.shape[0]}")
                 print(f"  gt_lidar points: {gt_lidar.shape[0]}")
@@ -600,6 +600,12 @@ def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderAr
         if semantic_eval:
             semantic_mode = semantic_head.training
             semantic_head.eval()
+            color_table = getattr(args, "semantic_color_map", None)
+            semantic_color_base = torch.tensor(color_table, dtype=torch.float32) if color_table is not None else None
+        else:
+            semantic_color_base = None
+        semantic_color_lut = None
+        semantic_label_map = None
 
         metrics = [
             RaydropMeter(),
@@ -656,16 +662,20 @@ def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderAr
 
                     if semantic_eval and semantic_meter is not None:
                         semantic_meter.update(semantic_pred_pano, gt_semantic_pano)
-                        max_class_index = max(semantic_class_count - 1, 1)
-                        semantic_pred_vis = semantic_pred_pano.clone().float()
-                        semantic_pred_vis[semantic_pred_pano == semantic_ignore_index] = 0
-                        semantic_pred_vis = semantic_pred_vis / max_class_index
-                        semantic_gt_vis = gt_semantic_pano.clone().float()
-                        semantic_gt_vis[gt_semantic_pano == semantic_ignore_index] = 0
-                        semantic_gt_vis = semantic_gt_vis / max_class_index
+                        desired_device = semantic_pred_pano.device
+                        if semantic_color_lut is None or semantic_color_lut.device != desired_device:
+                            if semantic_color_base is not None:
+                                semantic_color_lut = semantic_color_base.to(desired_device)
+                            else:
+                                if semantic_label_map is None:
+                                    semantic_label_map = load_semantic_label_mapping(getattr(args, "semantic_label_map_path", None),
+                                                                                     semantic_ignore_index)
+                                semantic_color_lut = semantic_label_map.torch_color_lut(device=desired_device)
+                        semantic_pred_color = colorize_semantic_tensor(semantic_pred_pano, semantic_color_lut, semantic_ignore_index)
+                        semantic_gt_color = colorize_semantic_tensor(gt_semantic_pano, semantic_color_lut, semantic_ignore_index)
                         grid.extend([
-                            visualize_depth(semantic_pred_vis, near=0.0, far=1.0),
-                            visualize_depth(semantic_gt_vis, near=0.0, far=1.0)
+                            semantic_pred_color,
+                            semantic_gt_color
                         ])
 
                     grid = make_grid(grid, nrow=2)

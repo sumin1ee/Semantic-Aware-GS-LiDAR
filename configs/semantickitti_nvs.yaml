@@ -1,0 +1,62 @@
+# Data Config
+scene_type: "SemanticKITTI"
+source_path: "/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/SemanticKitti"
+model_path: "eval_output/semantickitti_reconstruction/seq_01"
+resolution_scales: [1, 2, 4]
+cam_num: 2
+eval: True
+num_pts: 1000000
+t_init: 0.1
+separate_scaling_t: 0.2
+sequence_id: "01"
+start_frame: 0
+end_frame: 100
+testhold: 4
+
+# LiDAR Config
+vfov: [-24.9, 2.0]         # HDL-64E vertical FoV
+hfov: [-90.0, 90.0]
+hw: [66, 515]
+time_duration: [-0.5, 0.5]
+
+test_iterations: [3000, 7000, 15000, 30000]
+random_init_point: 0
+dynamic: True
+sky_depth: False
+
+# Optimization Config
+iterations: 30000
+
+opacity_lr: 0.005
+
+densify_until_iter: 15000
+densify_grad_threshold: 1e-4
+sh_increase_interval: 2000
+
+lambda_v_reg: 0.01
+
+lambda_lidar: 10.0
+lambda_lidar_median: 10.0
+idar_decay: 0.0
+
+only_velodyne: True
+
+lambda_intensity: 0.05
+lambda_intensity_sh: 0.05
+lambda_raydrop: 0.05
+lambda_smooth: 0.001
+lambda_chamfer: 0.1
+lambda_distortion: 0.1
+lambda_normal_consistency: 0.1
+thresh_opa_prune: 0.005
+
+# Semantic Config
+lambda_semantic: 0.1
+semantic_num_classes: 26     # SemanticKITTI official label set (after remap)
+semantic_head_type: "conv"
+semantic_conv_hidden_dims: [256, 128]
+semantic_dropout: 0.1
+semantic_ignore_index: -1
+semantic_head_lr: 0.001
+semantic_head_weight_decay: 0.0
+

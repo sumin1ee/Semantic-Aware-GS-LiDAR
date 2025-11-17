@@ -14,10 +14,12 @@ from utils.general_utils import shuffle_by_pairs
 from utils.misc import pointList_from_cams
 from scene.kitti360_loader import readKitti360Info
 from scene.nuscenes_loader import readNuScenesInfo
+from scene.semantickitti_loader import readSemanticKITTIInfo
 
 sceneLoadTypeCallbacks = {
     "Kitti360": readKitti360Info,
     "NuScenes": readNuScenesInfo,
+    "SemanticKITTI": readSemanticKITTIInfo,
 }
 
 
