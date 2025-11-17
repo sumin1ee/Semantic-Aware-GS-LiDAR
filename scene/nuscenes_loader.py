@@ -152,6 +152,7 @@ def readNuScenesInfo(args) -> SceneInfo:
     point_list: List[np.ndarray] = []
     point_time: List[np.ndarray] = []
     cam_infos: List[CameraInfo] = []
+    points_world_per_frame: List[np.ndarray] = []  # Store world points per frame for later transform
 
     for frame_idx, sample in enumerate(tqdm(frame_records, desc="Reading nuScenesInfo")):
         lidar_token = sample["data"]["LIDAR_TOP"]
@@ -165,6 +166,7 @@ def readNuScenesInfo(args) -> SceneInfo:
         masked_size = int(mask.sum())
         points_lidar = points_lidar[mask]
         intensity = intensity[mask]
+
         if semantics.size == mask.shape[0]:
             semantics = semantics[mask]
         elif semantics.size == masked_size:
@@ -175,6 +177,7 @@ def readNuScenesInfo(args) -> SceneInfo:
         points_homo = np.concatenate([points_lidar, np.ones_like(points_lidar[:, :1])], axis=-1)
         points_world = (lidar2global @ points_homo.T).T[:, :3]
         point_list.append(points_world)
+        points_world_per_frame.append(points_world.copy())
 
         normalized_time = args.time_duration[0] + (args.time_duration[1] - args.time_duration[0]) * frame_idx / max(frames - 1, 1)
         point_time.append(np.full((points_world.shape[0], 1), normalized_time, dtype=np.float32))
@@ -233,10 +236,21 @@ def readNuScenesInfo(args) -> SceneInfo:
     for idx, cam_info in enumerate(cam_infos):
         c2w = c2ws[idx]
         w2c = np.linalg.inv(c2w)
-        cam_info.R[:] = np.transpose(w2c[:3, :3])
+        cam_info.R[:] = np.transpose(w2c[:3, :3])  # R is stored transposed due to 'glm' in CUDA code
         cam_info.T[:] = w2c[:3, 3]
+        
         if cam_info.pointcloud_camera is not None:
-            cam_info.pointcloud_camera[:] *= scale_factor
+            # Recalculate camera coordinates using transformed world points
+            # Each frame has 2 cameras (forward and backward), so frame_idx = idx // 2
+            frame_idx = idx // 2
+            if frame_idx < len(points_world_per_frame):
+                points_world_orig = points_world_per_frame[frame_idx]
+                # Apply transform to world points
+                points_world_homo = np.pad(points_world_orig, ((0, 0), (0, 1)), constant_values=1)
+                points_world_transformed = (points_world_homo @ transform.T)[:, :3]
+                # Recalculate camera coordinates using updated R and T
+                points_cam_transformed = points_world_transformed @ cam_info.R + cam_info.T
+                cam_info.pointcloud_camera[:] = points_cam_transformed
 
     pointcloud = (np.pad(pointcloud, ((0, 0), (0, 1)), constant_values=1) @ transform.T)[:, :3]
     args.scale_factor = float(scale_factor)

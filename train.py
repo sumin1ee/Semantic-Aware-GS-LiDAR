@@ -187,7 +187,7 @@ def training(args):
             time_shift = 3 * (np.random.random() - 0.5) * scene.time_interval
         else:
             time_shift = None
-
+        breakpoint()
         render_pkg = render(viewpoint_cam, gaussians, args, background, env_map=lidar_raydrop_prior, other=other, time_shift=time_shift, is_training=True)
 
         depth = render_pkg["depth"]
@@ -269,8 +269,36 @@ def training(args):
         if args.lambda_lidar > 0:
             pts_depth = viewpoint_cam.pts_depth.cuda()
 
+            # Debug: Check LiDAR data loading
+            if iteration % 100 == 0:
+                print(f"\n[DEBUG LiDAR - Iter {iteration}]")
+                print(f"  pts_depth is None: {pts_depth is None}")
+                if pts_depth is not None:
+                    print(f"  pts_depth shape: {pts_depth.shape}")
+                    print(f"  pts_depth min/max: {pts_depth.min().item():.4f}/{pts_depth.max().item():.4f}")
+                    print(f"  pts_depth mean: {pts_depth.mean().item():.4f}")
+                    valid_pixels = (pts_depth > 0).sum().item()
+                    total_pixels = pts_depth.numel()
+                    print(f"  Valid pixels (depth > 0): {valid_pixels}/{total_pixels} ({100*valid_pixels/total_pixels:.2f}%)")
+                    if valid_pixels > 0:
+                        valid_depths = pts_depth[pts_depth > 0]
+                        print(f"  Valid depth min/max/mean: {valid_depths.min().item():.4f}/{valid_depths.max().item():.4f}/{valid_depths.mean().item():.4f}")
+                    else:
+                        print(f"  WARNING: No valid depth pixels!")
+
             mask = pts_depth > 0
-            loss_lidar = F.l1_loss(pts_depth[mask], depth[mask])
+            if mask.sum() == 0:
+                if iteration % 100 == 0:
+                    print(f"  ERROR: No valid pixels for LiDAR loss!")
+                loss_lidar = torch.tensor(0.0, device=depth.device)
+            else:
+                loss_lidar = F.l1_loss(pts_depth[mask], depth[mask])
+                if iteration % 100 == 0:
+                    print(f"  depth (rendered) min/max/mean: {depth[mask].min().item():.4f}/{depth[mask].max().item():.4f}/{depth[mask].mean().item():.4f}")
+                    print(f"  loss_lidar: {loss_lidar.item():.6f}")
+                    if torch.isnan(loss_lidar) or torch.isinf(loss_lidar):
+                        print(f"  ERROR: Invalid loss_lidar value!")
+            
             if args.lidar_decay > 0:
                 iter_decay = np.exp(-iteration / 8000 * args.lidar_decay)
             else:
@@ -317,12 +345,35 @@ def training(args):
             pts_depth = viewpoint_cam.pts_depth.cuda()
             mask = (pts_depth > 0).float()
 
+            # Debug: Check chamfer loss inputs
+            if iteration % 100 == 0:
+                print(f"\n[DEBUG Chamfer Loss - Iter {iteration}]")
+                valid_mask_count = (pts_depth > 0).sum().item()
+                print(f"  Valid pixels for chamfer: {valid_mask_count}/{pts_depth.numel()}")
+                if valid_mask_count > 0:
+                    print(f"  pts_depth (gt) range: {pts_depth[pts_depth > 0].min().item():.4f} to {pts_depth[pts_depth > 0].max().item():.4f}")
+                    print(f"  depth (pred) range: {depth[mask > 0].min().item():.4f} to {depth[mask > 0].max().item():.4f}")
+
             cham_fn = chamfer_3DDist()
             pred_lidar = pano_to_lidar(depth * mask, args.vfov, args.hfov) / args.scale_factor
             gt_lidar = pano_to_lidar(pts_depth, args.vfov, args.hfov) / args.scale_factor
+            
+            if iteration % 100 == 0:
+                print(f"  pred_lidar points: {pred_lidar.shape[0]}")
+                print(f"  gt_lidar points: {gt_lidar.shape[0]}")
+                if pred_lidar.shape[0] > 0 and gt_lidar.shape[0] > 0:
+                    print(f"  pred_lidar range: {pred_lidar.min().item():.4f} to {pred_lidar.max().item():.4f}")
+                    print(f"  gt_lidar range: {gt_lidar.min().item():.4f} to {gt_lidar.max().item():.4f}")
+            
             dist1, dist2, _, _ = cham_fn(pred_lidar[None], gt_lidar[None])
 
             loss_chamfer = dist1.mean() + dist2.mean()
+            if iteration % 100 == 0:
+                print(f"  loss_chamfer: {loss_chamfer.item():.6f}")
+                print(f"  dist1.mean: {dist1.mean().item():.6f}, dist2.mean: {dist2.mean().item():.6f}")
+                if torch.isnan(loss_chamfer) or torch.isinf(loss_chamfer):
+                    print(f"  ERROR: Invalid loss_chamfer value!")
+            
             log_dict['loss_chamfer'] = loss_chamfer.item()
             loss += args.lambda_chamfer * loss_chamfer
 
