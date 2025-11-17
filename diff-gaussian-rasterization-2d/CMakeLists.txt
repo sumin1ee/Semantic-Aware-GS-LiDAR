@@ -28,7 +28,8 @@ add_library(CudaRasterizer
 	cuda_rasterizer/rasterizer.h
 )
 
-set_target_properties(CudaRasterizer PROPERTIES CUDA_ARCHITECTURES "70;75;86")
+# Compute capabilities: 70 (V100), 75 (T4), 80 (A100), 86 (RTX 30xx), 89 (RTX 4090/Ada)
+set_target_properties(CudaRasterizer PROPERTIES CUDA_ARCHITECTURES "70;75;80;86;89")
 
 target_include_directories(CudaRasterizer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cuda_rasterizer)
 target_include_directories(CudaRasterizer PRIVATE third_party/glm ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})

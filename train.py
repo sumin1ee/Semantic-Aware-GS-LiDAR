@@ -661,6 +661,16 @@ def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderAr
                             visualize_depth(gt_raydrop_pano, near=0.01, far=1)]
 
                     if semantic_eval and semantic_meter is not None:
+                        # Debug: Check semantic data before update
+                        if idx == 0 and iteration in test_iterations:
+                            pred_unique = torch.unique(semantic_pred_pano)
+                            gt_unique = torch.unique(gt_semantic_pano)
+                            valid_gt = (gt_semantic_pano != semantic_ignore_index) & (gt_semantic_pano >= 0) & (gt_semantic_pano < semantic_class_count)
+                            print(f"\n[Semantic Eval Debug - Iter {iteration}, Frame {cam_front.colmap_id}]")
+                            print(f"  Pred unique values: {pred_unique.cpu().numpy()}")
+                            print(f"  GT unique values: {gt_unique.cpu().numpy()}")
+                            print(f"  Valid GT pixels: {valid_gt.sum().item()}/{gt_semantic_pano.numel()}")
+                            print(f"  Pred shape: {semantic_pred_pano.shape}, GT shape: {gt_semantic_pano.shape}")
                         semantic_meter.update(semantic_pred_pano, gt_semantic_pano)
                         desired_device = semantic_pred_pano.device
                         if semantic_color_lut is None or semantic_color_lut.device != desired_device:

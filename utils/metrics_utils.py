@@ -510,15 +510,18 @@ class SemanticMeter:
         truths = self._to_numpy(truths).reshape(-1)
 
         # Filter out ignore_index and out-of-range values
+        # Only filter based on GT, but clamp preds to valid range
         valid_mask = (truths != self.ignore_index) & (truths >= 0) & (truths < self.num_classes)
-        # Also filter preds to ensure they are in valid range
-        valid_mask = valid_mask & (preds >= 0) & (preds < self.num_classes)
+        
+        if valid_mask.sum() == 0:
+            return
         
         preds = preds[valid_mask]
         truths = truths[valid_mask]
-        if truths.size == 0:
-            return
-
+        
+        # Clamp predictions to valid range [0, num_classes)
+        preds = np.clip(preds, 0, self.num_classes - 1)
+        
         # Ensure values are non-negative integers for bincount
         preds = preds.astype(np.int64)
         truths = truths.astype(np.int64)
@@ -535,11 +538,18 @@ class SemanticMeter:
         diag = np.diag(self.confusion)
         accuracy = diag.sum() / total
 
-        row_sum = self.confusion.sum(axis=1)
-        col_sum = self.confusion.sum(axis=0)
+        # Calculate IoU per class
+        # IoU = TP / (TP + FP + FN) = diag / (row_sum + col_sum - diag)
+        row_sum = self.confusion.sum(axis=1)  # Ground truth counts per class
+        col_sum = self.confusion.sum(axis=0)    # Prediction counts per class
         denom = row_sum + col_sum - diag
         valid = denom > 0
         iou = np.zeros(self.num_classes, dtype=np.float64)
         iou[valid] = diag[valid] / denom[valid]
-        miou = iou[valid].mean() if valid.any() else 0.0
+        # Only average over classes that appear in GT (row_sum > 0)
+        classes_in_gt = row_sum > 0
+        if classes_in_gt.any():
+            miou = iou[classes_in_gt].mean()
+        else:
+            miou = 0.0
         return float(accuracy), float(miou)
