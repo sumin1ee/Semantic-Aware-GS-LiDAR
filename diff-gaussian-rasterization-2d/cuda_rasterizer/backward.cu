@@ -11,7 +11,6 @@
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
-#define MAX_FEATURES 50
 
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
@@ -208,7 +207,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 	float accum_rec[C] = {0};
 	float accum_feature_rec[MAX_FEATURES + 3] = {0};
 	float dL_dpixel[C] = {0};
-	float dL_dfeature[13] = {0};
+	float dL_dfeature[MAX_FEATURES] = {0};
 	float dL_depth = 0;
 	float dL_dmedian_depth = 0;
 	float dL_ddistortion = 0;

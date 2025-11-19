@@ -16,6 +16,7 @@
 #define NUM_WARPS (BLOCK_SIZE / 32)
 #define MY_PI 3.14159265
 #define DUAL_VISIABLE 1
+#define MAX_FEATURES 50
 
 __device__ const float near_n = 2.0;
 __device__ const float far_n = 90.0;

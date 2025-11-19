@@ -345,7 +345,7 @@ __global__ void __launch_bounds__(BLOCK_X *BLOCK_Y)
 	int32_t contributor = 0;
 	int32_t last_contributor = 0;
 	float C[CHANNELS] = {0};
-	float F[13] = {0};
+	float F[MAX_FEATURES + 3] = {0};
 	float D = {0};
 	float D2 = {0};
 
