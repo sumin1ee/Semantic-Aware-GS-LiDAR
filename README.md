@@ -1,32 +1,30 @@
-# GS-LiDAR: Generating Realistic LiDAR Point Clouds with Panoramic Gaussian Splatting
-
-### [[Project]]() [[Paper]](https://arxiv.org/abs/2501.13971) 
-
-> [**GS-LiDAR: Generating Realistic LiDAR Point Clouds with Panoramic Gaussian Splatting**](https://arxiv.org/abs/2501.13971),            
-> [Junzhe Jiang](https://scholar.google.com/citations?user=gnDoDP4AAAAJ), [Chun Gu](https://sulvxiangxin.github.io/), [Yurui Chen](https://github.com/fumore), [Li Zhang](https://lzrobots.github.io)       
-> **ICLR 2025**
-
-**Official implementation of "GS-LiDAR: Generating Realistic LiDAR Point Clouds with Panoramic Gaussian Splatting".** 
+# LiSenCE: LiDAR Semantic Gaussian Splatting with Coherent Embedding Field
+> **The Project on Advanced Computer Vision 2025**
 
 ## 🛠️ Pipeline
 <div align="center">
-  <img src="assets/pipeline.png"/>
+  <img src="assets/overview.pdf"/>
 </div><br/>
 
 ## Get started
 ### Environment
 ```
 # Clone the repo.
-git clone https://github.com/fudan-zvg/GS-LiDAR.git
-cd GS-LiDAR
+# NOTE: Repository will be made public after the project release.
+git clone ...
 
 # Make a conda environment.
-conda create --name gslidar python=3.9
-conda activate gslidar
+conda create --name lisence python=3.9
+conda activate lisence
 
 # Install PyTorch according to your CUDA version
-# CUDA 11.7
-pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2
+# CUDA 11.7 (Ampere and earlier)
+pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 \
+    --index-url https://download.pytorch.org/whl/cu117
+
+# CUDA 11.8 (Ada / Blackwell)
+pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 \
+    --index-url https://download.pytorch.org/whl/cu118
 
 # Install requirements.
 pip install -r requirements.txt
@@ -42,41 +40,26 @@ cd ../..
 ```
 
 ### 📁 Dataset
-#### KITTI-360 dataset ([Download](https://www.cvlibs.net/datasets/kitti-360/download.php))
-We use sequence00 (`2013_05_28_drive_0000_sync`) for experiments in our paper. Download KITTI-360 dataset (2D images are not needed) and put them into `data/kitti360`. The folder tree is as follows:
+#### SemanticKITTI dataset ([Download](http://www.semantic-kitti.org/))
+Download the official SemanticKITTI release (sequences, labels, poses) and organize as follows:
 ```bash
-data
-└── kitti360
-    └── KITTI-360
-        ├── calibration
-        ├── data_3d_raw
-        └── data_poses
+Semantic-Aware-GS-LiDAR
+└── data
+    └── SemanticKITTI
+        └── sequences
+            └── 00
+                ├── velodyne
+                ├── labels
+                ├── calib.txt
+                └── poses.txt  # copy from poses/00.txt in the official release
 ```
 
-Next, run KITTI-360 dataset preprocessing: (set `sequence_id`)  
+1. Copy each `poses/{seq}.txt` file into `sequences/{seq}/poses.txt`; the loader expects poses next to the LiDAR frames.
+2. Set `sequence_id` (e.g., `00`) in `configs/semantickitti_nvs.yaml` or override it via the CLI.
+3. (Optional) Adjust `semantic_label_map_path` if you use a custom remapping; by default we rely on `configs/semantickitti_label_map.yaml`.
 
-```bash
-python preprocess/kitti360_to_gs.py --seq {sequence_id}
-```
-
-After preprocessing, your folder structure should look like this:  
-
-```bash
-configs
-├── base.yaml
-├── kitti360_nvs_{sequence_id}.yaml
-data
-└── kitti360
-    ├── KITTI-360
-    │   ├── calibration
-    │   ├── data_3d_raw
-    │   └── data_poses
-    └── {sequence_id}
-        └── transforms_{sequence_id}_all.json
-```
-
-# nuScenes dataset
-We support nuScenes LiDAR training via the new `NuScenes` scene loader. The expected layout is:
+#### nuScenes dataset
+We support nuScenes LiDAR training via the `NuScenes` scene loader. The expected layout is:
 
 ```bash
 Semantic-Aware-GS-LiDAR
@@ -108,57 +91,43 @@ The loader expects `nuscenes-devkit` and `pyquaternion`, which are included in `
 
 ### Training
 ```
-# KITTI-360
-# static
+# SemanticKITTI
 CUDA_VISIBLE_DEVICES=0 python train.py \
---config configs/kitti360_nvs_1908.yaml \
-source_path=data/kitti360 \
-model_path=eval_output/kitti360_reconstruction/1908
+--config configs/semantickitti_nvs.yaml \
+source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/SemanticKITTI \
+sequence_id=00 \
+model_path=eval_output/semantickitti_reconstruction/seq00
 
-# dynamic
+# nuScenes
 CUDA_VISIBLE_DEVICES=0 python train.py \
---config configs/kitti360_nvs_10750.yaml \
-source_path=data/kitti360 \
-model_path=eval_output/kitti360_reconstruction/10750
+--config configs/nuscenes_nvs.yaml \
+source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/nuscenes \
+scene_name=scene-0103 \
+model_path=eval_output/nuscenes_reconstruction/scene-0103
 ```
 
 After training, evaluation results can be found in `{EXPERIMENT_DIR}/eval_output` directory.
 The training logs will be saved in `log.txt`. If you need to display them in the terminal, please use the `--show_log` option.
 
 ### Evaluating
-You can also use the following command to evaluate.
+You can also use the following command to evaluate using pre-trained checkpoints.
 ```
-# KITTI-360
-# static
+# SemanticKITTI
 CUDA_VISIBLE_DEVICES=0 python train.py \
---config configs/kitti360_nvs_1908.yaml \
-source_path=data/kitti360 \
-model_path=eval_output/kitti360_reconstruction/1908 \
+--config configs/semantickitti_nvs.yaml \
+source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/SemanticKITTI \
+sequence_id=00 \
+model_path=eval_output/semantickitti_reconstruction/seq00 \
 --test_only
 
-# dynamic
+# nuScenes
 CUDA_VISIBLE_DEVICES=0 python train.py \
---config configs/kitti360_nvs_10750.yaml \
-source_path=data/kitti360 \
-model_path=eval_output/kitti360_reconstruction/10750 \
+--config configs/nuscenes_nvs.yaml \
+source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/nuscenes \
+scene_name=scene-0103 \
+model_path=eval_output/nuscenes_reconstruction/scene-0103 \
 --test_only
 ```
-
-You can visualize the lidar point cloud in 3d by using:
-```
-python scripts/visualize_lidar_in_video.py --seq {sequence_id}
-```
-The results will be saved in `eval_output/kitti360_reconstruction/{sequence_id}/eval/others` and will resemble the video shown below.
-
-![](assets/3d.gif)
-
-We also provide a Python script to help understand the implementation of **panorama Gaussian splatting** and the reason of choosing [2DGS](https://github.com/hbb1/2d-gaussian-splatting).
-```
-python scripts/compare_2dgs_3dgs.py
-```
-<div align="center">
-  <img src="assets/2dgs_vs_3dgs.png"/>
-</div><br/>
 
 ## 📜 BibTeX
 ``` bibtex
