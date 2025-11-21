@@ -1,16 +1,16 @@
 # Data Config
 scene_type: "SemanticKITTI"
 source_path: "/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/SemanticKitti"
-model_path: "eval_output/semantickitti_reconstruction/seq_01"
+model_path: "eval_output/semantickitti_reconstruction/unet32_semantic_loss"
 resolution_scales: [1, 2, 4]
 cam_num: 2
 eval: True
-num_pts: 1000000
+num_pts: 2000000
 t_init: 0.1
 separate_scaling_t: 0.2
-sequence_id: "01"
-start_frame: 0
-end_frame: 100
+sequence_id: "00"
+start_frame: 634
+end_frame: 734
 testhold: 4
 
 # LiDAR Config
@@ -19,7 +19,7 @@ hfov: [-90.0, 90.0]
 hw: [66, 515]
 time_duration: [-0.5, 0.5]
 
-test_iterations: [3000, 7000, 15000, 30000]
+test_iterations: [1000, 3000, 7000, 15000, 30000]
 random_init_point: 0
 dynamic: True
 sky_depth: False
@@ -51,12 +51,19 @@ lambda_normal_consistency: 0.1
 thresh_opa_prune: 0.005
 
 # Semantic Config
+semantic_dim: 32
 lambda_semantic: 0.1
 semantic_num_classes: 26     # SemanticKITTI official label set (after remap)
-semantic_head_type: "conv"
-semantic_conv_hidden_dims: [256, 128]
+semantic_head_type: "unet"
+semantic_unet_base_channels: 64
+semantic_unet_depth: 3
+semantic_conv_hidden_dims: [128, 64]
 semantic_dropout: 0.1
 semantic_ignore_index: -1
-semantic_head_lr: 0.001
+semantic_head_lr: 0.01
 semantic_head_weight_decay: 0.0
 
+# Semantic-geometry/intensity coupling losses
+lambda_semantic_chamfer: 0.000
+lambda_semantic_smooth: 0.0  # Smoothness within same semantic class
+lambda_semantic_depth_refine: 0.0

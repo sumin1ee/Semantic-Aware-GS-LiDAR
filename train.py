@@ -31,6 +31,8 @@ from utils.metrics_utils import DepthMeter, PointsMeter, RaydropMeter, Intensity
 from utils.semantic_mapping import load_semantic_label_mapping, colorize_semantic_tensor
 from chamfer.chamfer3D.dist_chamfer_3D import chamfer_3DDist
 from scene.unet import UNet
+from datetime import datetime
+from utils.nerfstudio_utils import create_viewer_from_args
 
 EPS = 1e-5
 
@@ -46,6 +48,15 @@ def training(args):
         f.writelines(str(args.scale_factor))
 
     gaussians.training_setup(args)
+
+    viewer = create_viewer_from_args(args)
+    if viewer is not None:
+        try:
+            viewer.update_gaussians(0, scene.gaussians)
+        except Exception as exc:
+            print(f"[Viewer] Initialization update failed: {exc}")
+            viewer.close()
+            viewer = None
 
     semantic_head = None
     semantic_optimizer = None
@@ -146,13 +157,15 @@ def training(args):
         for i in range(first_iter // args.scale_increase_interval):
             scene.upScale()
 
-    bg_color = [1, 1, 1, 1] if args.white_background else [0, 0, 0, 1]  # 无穷远的ray drop概率为1
+    bg_color = [1, 1, 1, 1] if args.white_background else [0, 0, 0, 1] # 
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     if args.test_only or first_iter == args.iterations:
         with torch.no_grad():
             complete_eval(first_iter, args.test_iterations, scene, render, (args, background),
                           {}, env_map=lidar_raydrop_prior, semantic_head=semantic_head)
+        if viewer is not None:
+            viewer.close()
             return
 
     iter_start = torch.cuda.Event(enable_timing=True)
@@ -268,37 +281,11 @@ def training(args):
 
         if args.lambda_lidar > 0:
             pts_depth = viewpoint_cam.pts_depth.cuda()
-
-            # Debug: Check LiDAR data loading
-            if iteration % 100 == 0:
-                print(f"\n[DEBUG LiDAR - Iter {iteration}]")
-                print(f"  pts_depth is None: {pts_depth is None}")
-                if pts_depth is not None:
-                    print(f"  pts_depth shape: {pts_depth.shape}")
-                    print(f"  pts_depth min/max: {pts_depth.min().item():.4f}/{pts_depth.max().item():.4f}")
-                    print(f"  pts_depth mean: {pts_depth.mean().item():.4f}")
-                    valid_pixels = (pts_depth > 0).sum().item()
-                    total_pixels = pts_depth.numel()
-                    print(f"  Valid pixels (depth > 0): {valid_pixels}/{total_pixels} ({100*valid_pixels/total_pixels:.2f}%)")
-                    if valid_pixels > 0:
-                        valid_depths = pts_depth[pts_depth > 0]
-                        print(f"  Valid depth min/max/mean: {valid_depths.min().item():.4f}/{valid_depths.max().item():.4f}/{valid_depths.mean().item():.4f}")
-                    else:
-                        print(f"  WARNING: No valid depth pixels!")
-
             mask = pts_depth > 0
             if mask.sum() == 0:
-                if iteration % 100 == 0:
-                    print(f"  ERROR: No valid pixels for LiDAR loss!")
                 loss_lidar = torch.tensor(0.0, device=depth.device)
             else:
                 loss_lidar = F.l1_loss(pts_depth[mask], depth[mask])
-                if iteration % 100 == 0:
-                    print(f"  depth (rendered) min/max/mean: {depth[mask].min().item():.4f}/{depth[mask].max().item():.4f}/{depth[mask].mean().item():.4f}")
-                    print(f"  loss_lidar: {loss_lidar.item():.6f}")
-                    if torch.isnan(loss_lidar) or torch.isinf(loss_lidar):
-                        print(f"  ERROR: Invalid loss_lidar value!")
-            
             if args.lidar_decay > 0:
                 iter_decay = np.exp(-iteration / 8000 * args.lidar_decay)
             else:
@@ -344,35 +331,12 @@ def training(args):
         if args.lambda_chamfer > 0:
             pts_depth = viewpoint_cam.pts_depth.cuda()
             mask = (pts_depth > 0).float()
-
-            # Debug: Check chamfer loss inputs
-            if iteration % 100 == 0:
-                print(f"\n[DEBUG Chamfer Loss - Iter {iteration}]")
-                valid_mask_count = (pts_depth > 0).sum().item()
-                print(f"  Valid pixels for chamfer: {valid_mask_count}/{pts_depth.numel()}")
-                if valid_mask_count > 0:
-                    print(f"  pts_depth (gt) range: {pts_depth[pts_depth > 0].min().item():.4f} to {pts_depth[pts_depth > 0].max().item():.4f}")
-                    print(f"  depth (pred) range: {depth[mask > 0].min().item():.4f} to {depth[mask > 0].max().item():.4f}")
-
             cham_fn = chamfer_3DDist()
             pred_lidar = pano_to_lidar(depth * mask, args.vfov, args.hfov) / args.scale_factor
             gt_lidar = pano_to_lidar(pts_depth, args.vfov, args.hfov) / args.scale_factor
-            if iteration % 100 == 0:
-                print(f"  pred_lidar points: {pred_lidar.shape[0]}")
-                print(f"  gt_lidar points: {gt_lidar.shape[0]}")
-                if pred_lidar.shape[0] > 0 and gt_lidar.shape[0] > 0:
-                    print(f"  pred_lidar range: {pred_lidar.min().item():.4f} to {pred_lidar.max().item():.4f}")
-                    print(f"  gt_lidar range: {gt_lidar.min().item():.4f} to {gt_lidar.max().item():.4f}")
-            
             dist1, dist2, _, _ = cham_fn(pred_lidar[None], gt_lidar[None])
 
             loss_chamfer = dist1.mean() + dist2.mean()
-            if iteration % 100 == 0:
-                print(f"  loss_chamfer: {loss_chamfer.item():.6f}")
-                print(f"  dist1.mean: {dist1.mean().item():.6f}, dist2.mean: {dist2.mean().item():.6f}")
-                if torch.isnan(loss_chamfer) or torch.isinf(loss_chamfer):
-                    print(f"  ERROR: Invalid loss_chamfer value!")
-            
             log_dict['loss_chamfer'] = loss_chamfer.item()
             loss += args.lambda_chamfer * loss_chamfer
 
@@ -432,10 +396,346 @@ def training(args):
             lambda_depth_var = args.lambda_depth_var if iteration > 3000 else 0.0
             loss = loss + lambda_depth_var * loss_depth_var
 
+        if args.lambda_semantic_chamfer > 0 and semantic_supervised and rendered_semantic.numel() > 0:
+            """
+            Per-class Chamfer distance loss with proper 3D point conversion.
+            """
+            pts_depth = viewpoint_cam.pts_depth.cuda()
+            valid_mask = pts_depth > 0
+            
+            # Reuse semantic predictions
+            if 'semantic_logits' not in locals() or semantic_logits is None:
+                with torch.no_grad():
+                    semantic_input = rendered_semantic.unsqueeze(0)
+                    semantic_logits = semantic_head(semantic_input)
+            
+            semantic_pred = semantic_logits.detach().argmax(dim=1).squeeze(0)  # [H, W]
+            
+            # Get GT semantic
+            gt_semantic = getattr(viewpoint_cam, "pts_semantic", None)
+            if gt_semantic is None:
+                log_dict['loss_semantic_chamfer'] = 0.0
+            else:
+                if gt_semantic.dim() == 3 and gt_semantic.shape[0] == 1:
+                    gt_semantic = gt_semantic.squeeze(0)
+                
+                # Class weights
+                class_weights_cfg = getattr(args, "semantic_chamfer_class_weights", {})
+                default_weight = 1.0
+                
+                # Per-class Chamfer
+                cham_fn = chamfer_3DDist()
+                
+                # Find common classes
+                pred_classes = torch.unique(semantic_pred[valid_mask.squeeze(0)])
+                gt_classes = torch.unique(gt_semantic[valid_mask.squeeze(0)])
+                common_classes = [c.item() for c in pred_classes 
+                                if c in gt_classes 
+                                and c != getattr(args, "semantic_ignore_index", -1)]
+                loss_semantic_chamfer = 0.0
+                total_weight = 0.0
+                class_losses = {}
+                skipped_classes = {}
+                
+                for cls_id in common_classes:
+                    # Masks
+                    pred_mask = (semantic_pred == cls_id) & valid_mask.squeeze(0)
+                    gt_mask = (gt_semantic == cls_id) & valid_mask.squeeze(0)
+                    
+                    pred_count = pred_mask.sum().item()
+                    gt_count = gt_mask.sum().item()
+                
+                    if not (pred_count > 0  and gt_count > 0):
+                        continue
+                        
+                    # Create class-specific depth maps
+                    pred_depth_cls_map = torch.zeros_like(depth)
+                    pred_depth_cls_map.squeeze(0)[pred_mask] = depth.squeeze(0)[pred_mask]
+                    
+                    gt_depth_cls_map = torch.zeros_like(pts_depth)
+                    gt_depth_cls_map.squeeze(0)[gt_mask] = pts_depth.squeeze(0)[gt_mask]
+                
+                    # Convert to 3D points
+                    pred_points_3d = pano_to_lidar(
+                        pred_depth_cls_map, 
+                        args.vfov, 
+                        args.hfov
+                    ) / args.scale_factor  # [3, N_total]
+                    
+                    gt_points_3d = pano_to_lidar(
+                        gt_depth_cls_map,
+                        args.vfov,
+                        args.hfov
+                    ) / args.scale_factor  # [3, M_total]
+                    
+                    # Filter zero points (ensure last dimension is xyz)
+                    pred_nonzero = pred_points_3d.abs().sum(dim=1) > 1e-6
+                    gt_nonzero = gt_points_3d.abs().sum(dim=1) > 1e-6
+                    
+                    pred_points_3d = pred_points_3d[pred_nonzero]  # [N, 3]
+                    gt_points_3d = gt_points_3d[gt_nonzero]        # [M, 3]
+                    
+                    # Sample for efficiency
+                    max_points = 1000
+                    if pred_points_3d.shape[0] > max_points:
+                        indices = torch.randperm(pred_points_3d.shape[0], device=pred_points_3d.device)[:max_points]
+                        pred_points_3d = pred_points_3d[indices]
+                    if gt_points_3d.shape[0] > max_points:
+                        indices = torch.randperm(gt_points_3d.shape[0], device=gt_points_3d.device)[:max_points]
+                        gt_points_3d = gt_points_3d[indices]
+                    
+                    # Compute Chamfer
+                    pred_3d = pred_points_3d.unsqueeze(0)  # [1, N, 3]
+                    gt_3d = gt_points_3d.unsqueeze(0)      # [1, M, 3]
+                    
+                    dist1, dist2, _, _ = cham_fn(pred_3d, gt_3d)
+                    cls_chamfer = dist1.mean() + dist2.mean()
+                    
+                    # Weighted accumulation
+                    cls_weight = class_weights_cfg.get(cls_id, default_weight)
+                    loss_semantic_chamfer += cls_weight * cls_chamfer
+                    total_weight += cls_weight
+                    
+                    class_losses[cls_id] = cls_chamfer.item()
+                
+                if total_weight > 0:
+                    loss_semantic_chamfer = loss_semantic_chamfer / total_weight
+                    log_dict['loss_semantic_chamfer'] = loss_semantic_chamfer.item()
+                    loss += args.lambda_semantic_chamfer * loss_semantic_chamfer
+                else:
+                    if iteration % 100 == 0:
+                        print(f"\n  [FAIL] No classes processed! Reasons:")
+                    log_dict['loss_semantic_chamfer'] = 0.0
+
+        if args.lambda_semantic_smooth > 0 and semantic_supervised and rendered_semantic.numel() > 0:
+            """
+            Match GT gradient patterns within the same semantic class.
+            
+            Key fixes:
+            1. Use median-based normalization (robust to outliers)
+            2. Compare with GT gradients (not just minimize)
+            3. Separate weights for depth and intensity
+            4. Use Huber loss for robustness
+            """
+            pts_depth = viewpoint_cam.pts_depth.cuda()
+            valid_mask = pts_depth > 0
+            
+            # Reuse semantic predictions
+            if 'semantic_logits' not in locals() or semantic_logits is None:
+                with torch.no_grad():
+                    semantic_input = rendered_semantic.unsqueeze(0)
+                    semantic_logits = semantic_head(semantic_input)
+            
+            semantic_pred = semantic_logits.detach().argmax(dim=1).squeeze(0)  # [H, W]
+            
+            # ===== Compute Gradients =====
+            # GT gradients
+            gt_depth_grad_x = torch.abs(pts_depth[:, :, :-1] - pts_depth[:, :, 1:])  # [1, H, W-1]
+            gt_depth_grad_y = torch.abs(pts_depth[:, :-1, :] - pts_depth[:, 1:, :])  # [1, H-1, W]
+            
+            # Predicted gradients
+            pred_depth_grad_x = torch.abs(depth[:, :, :-1] - depth[:, :, 1:])
+            pred_depth_grad_y = torch.abs(depth[:, :-1, :] - depth[:, 1:, :])
+            
+            # Intensity gradients
+            gt_intensity_grad_x = torch.abs(viewpoint_cam.pts_intensity[:, :, :-1] - 
+                                            viewpoint_cam.pts_intensity[:, :, 1:])
+            gt_intensity_grad_y = torch.abs(viewpoint_cam.pts_intensity[:, :-1, :] - 
+                                            viewpoint_cam.pts_intensity[:, 1:, :])
+            
+            pred_intensity_grad_x = torch.abs(intensity_sh_map[:, :, :-1] - 
+                                            intensity_sh_map[:, :, 1:])
+            pred_intensity_grad_y = torch.abs(intensity_sh_map[:, :-1, :] - 
+                                            intensity_sh_map[:, 1:, :])
+            
+            # ===== Semantic and Valid Masks =====
+            semantic_same_x = (semantic_pred[:, :-1] == semantic_pred[:, 1:]).float()
+            semantic_same_y = (semantic_pred[:-1, :] == semantic_pred[1:, :]).float()
+            
+            valid_mask_x = (pts_depth[:, :, :-1] > 0) & (pts_depth[:, :, 1:] > 0)
+            valid_mask_y = (pts_depth[:, :-1, :] > 0) & (pts_depth[:, 1:, :] > 0)
+            
+            # ===== FIX 1: Robust Normalization (median-based) =====
+            with torch.no_grad():
+                # Only consider same-class neighbors
+                same_class_mask_x = (semantic_same_x > 0) & valid_mask_x.squeeze(0)
+                same_class_mask_y = (semantic_same_y > 0) & valid_mask_y.squeeze(0)
+                
+                # Depth normalization
+                valid_gt_depth_x = gt_depth_grad_x[valid_mask_x]
+                valid_gt_depth_y = gt_depth_grad_y[valid_mask_y]
+                
+                if valid_gt_depth_x.numel() > 100:
+                    # Use 75th percentile (more robust to very small values)
+                    depth_scale_x = torch.quantile(valid_gt_depth_x, 0.75)
+                    depth_scale_y = torch.quantile(valid_gt_depth_y, 0.75)
+                    
+                    # Average both directions
+                    depth_scale = (depth_scale_x + depth_scale_y) / 2
+                    
+                    # Clamp to reasonable range
+                    min_scale = 0.02 * args.scale_factor  # 2cm minimum
+                    max_scale = 0.5 * args.scale_factor   # 50cm maximum
+                    depth_scale = torch.clamp(depth_scale, min_scale, max_scale)
+                else:
+                    depth_scale = 0.1 * args.scale_factor  # Default: 10cm
+                
+                # ===== Intensity Scale (SAME METHOD!) =====
+                if hasattr(viewpoint_cam, 'pts_intensity') and viewpoint_cam.pts_intensity is not None:
+                    # Compute GT intensity gradients
+                    gt_intensity_grad_x = torch.abs(viewpoint_cam.pts_intensity[:, :, :-1] - 
+                                                viewpoint_cam.pts_intensity[:, :, 1:])
+                    gt_intensity_grad_y = torch.abs(viewpoint_cam.pts_intensity[:, :-1, :] - 
+                                                viewpoint_cam.pts_intensity[:, 1:, :])
+                    
+                    # Extract same-class gradients
+                    valid_gt_intensity_x = gt_intensity_grad_x.squeeze(0)[same_class_mask_x]
+                    valid_gt_intensity_y = gt_intensity_grad_y.squeeze(0)[same_class_mask_y]
+                    
+                    if valid_gt_intensity_x.numel() > 100:
+                        # Use 75th percentile (same as depth)
+                        scale_x = torch.quantile(valid_gt_intensity_x, 0.75)
+                        scale_y = torch.quantile(valid_gt_intensity_y, 0.75)
+                        intensity_scale = (scale_x + scale_y) / 2
+                        
+                        # Clamp to reasonable range for intensity [0, 1]
+                        min_scale = 0.01  # 1% change
+                        max_scale = 0.3   # 30% change
+                        intensity_scale = torch.clamp(intensity_scale, min_scale, max_scale)
+                    else:
+                        intensity_scale = 0.05  # Default
+                else:
+                    intensity_scale = 0.05  # Fallback
+            
+            # Normalize gradients
+            pred_depth_grad_x_norm = pred_depth_grad_x / depth_scale
+            pred_depth_grad_y_norm = pred_depth_grad_y / depth_scale
+            gt_depth_grad_x_norm = gt_depth_grad_x / depth_scale
+            gt_depth_grad_y_norm = gt_depth_grad_y / depth_scale
+            
+            pred_intensity_grad_x_norm = pred_intensity_grad_x / intensity_scale
+            pred_intensity_grad_y_norm = pred_intensity_grad_y / intensity_scale
+            gt_intensity_grad_x_norm = gt_intensity_grad_x / intensity_scale
+            gt_intensity_grad_y_norm = gt_intensity_grad_y / intensity_scale
+            
+            # ===== FIX 2: Match GT gradients (not minimize) =====
+            # Combined masks
+            weight_x = (semantic_same_x * valid_mask_x.squeeze(0)).float()
+            weight_y = (semantic_same_y * valid_mask_y.squeeze(0)).float()
+            
+            num_valid_x = weight_x.sum()
+            num_valid_y = weight_y.sum()
+            
+            if num_valid_x >= 100 and num_valid_y >= 100:
+                # ===== Depth Smoothness (match GT gradient pattern) =====
+                # Use Huber loss to match gradients
+                loss_depth_smooth_x = F.huber_loss(
+                    pred_depth_grad_x_norm.squeeze(0)[weight_x > 0],
+                    gt_depth_grad_x_norm.squeeze(0)[weight_x > 0],
+                    reduction='mean',
+                    delta=1.0  # Normalized space
+                )
+                loss_depth_smooth_y = F.huber_loss(
+                    pred_depth_grad_y_norm.squeeze(0)[weight_y > 0],
+                    gt_depth_grad_y_norm.squeeze(0)[weight_y > 0],
+                    reduction='mean',
+                    delta=1.0
+                )
+                
+                loss_semantic_smooth_depth = loss_depth_smooth_x + loss_depth_smooth_y
+                
+                # ===== Intensity Smoothness =====
+                # Check if intensity GT is available
+                if hasattr(viewpoint_cam, 'pts_intensity') and viewpoint_cam.pts_intensity is not None:
+                    loss_intensity_smooth_x = F.huber_loss(
+                        pred_intensity_grad_x_norm.squeeze(0)[weight_x > 0],
+                        gt_intensity_grad_x_norm.squeeze(0)[weight_x > 0],
+                        reduction='mean',
+                        delta=1.0
+                    )
+                    loss_intensity_smooth_y = F.huber_loss(
+                        pred_intensity_grad_y_norm.squeeze(0)[weight_y > 0],
+                        gt_intensity_grad_y_norm.squeeze(0)[weight_y > 0],
+                        reduction='mean',
+                        delta=1.0
+                    )
+                    
+                    loss_semantic_smooth_intensity = loss_intensity_smooth_x + loss_intensity_smooth_y
+                else:
+                    loss_semantic_smooth_intensity = torch.tensor(0.0, device=depth.device)
+                
+            loss_semantic_smooth = loss_semantic_smooth_depth + loss_semantic_smooth_intensity
+            log_dict['loss_semantic_smooth'] = loss_semantic_smooth.item()
+            loss += args.lambda_semantic_smooth * loss_semantic_smooth
+        
+        if args.lambda_semantic_depth_refine > 0 and semantic_supervised and rendered_semantic.numel() > 0:
+            """
+            Refine depth geometry using semantic guidance.
+            
+            Key idea: Within the same semantic class, the relative depth differences
+            should match the ground truth. This prevents over-smoothing while
+            encouraging correct geometric structure.
+            
+            Reference: Inspired by PlaneRCNN (Liu et al., CVPR 2019) - plane fitting loss
+            
+            Args in config:
+                lambda_semantic_depth_refine: Loss weight (recommended: 0.01-0.05)
+                semantic_depth_refine_threshold: Max valid depth difference (default: 0.5m)
+            """
+            pts_depth = viewpoint_cam.pts_depth.cuda()
+            valid_mask = pts_depth > 0
+            
+            # Reuse semantic predictions
+            if 'semantic_logits' not in locals() or semantic_logits is None:
+                with torch.no_grad():
+                    semantic_input = rendered_semantic.unsqueeze(0)
+                    semantic_logits = semantic_head(semantic_input)
+            
+            semantic_pred = semantic_logits.detach().argmax(dim=1).squeeze(0)  # [H, W]
+            
+            # ===== Compute relative depth differences =====
+            # GT relative depth
+            gt_depth_diff_x = pts_depth[:, :, :-1] - pts_depth[:, :, 1:]  # [1, H, W-1]
+            gt_depth_diff_y = pts_depth[:, :-1, :] - pts_depth[:, 1:, :]  # [1, H-1, W]
+            
+            # Predicted relative depth
+            pred_depth_diff_x = depth[:, :, :-1] - depth[:, :, 1:]
+            pred_depth_diff_y = depth[:, :-1, :] - depth[:, 1:, :]
+            
+            # ===== Semantic masks =====
+            semantic_same_x = (semantic_pred[:, :-1] == semantic_pred[:, 1:]).float()
+            semantic_same_y = (semantic_pred[:-1, :] == semantic_pred[1:, :]).float()
+            
+            # Valid masks: both neighbors have valid GT depth
+            valid_mask_x = (pts_depth[:, :, :-1] > 0) & (pts_depth[:, :, 1:] > 0)
+            valid_mask_y = (pts_depth[:, :-1, :] > 0) & (pts_depth[:, 1:, :] > 0)
+            
+            # Combined masks
+            weight_x = (semantic_same_x * valid_mask_x.squeeze(0)).float()
+            weight_y = (semantic_same_y * valid_mask_y.squeeze(0)).float()
+
+            loss_refine_x = F.huber_loss(
+                pred_depth_diff_x.squeeze(0)[weight_x > 0],
+                gt_depth_diff_x.squeeze(0)[weight_x > 0],
+                reduction='mean',
+                delta=0.1 * args.scale_factor  # Robust to outliers
+            )
+            loss_refine_y = F.huber_loss(
+                pred_depth_diff_y.squeeze(0)[weight_y > 0],
+                gt_depth_diff_y.squeeze(0)[weight_y > 0],
+                reduction='mean',
+                delta=0.1 * args.scale_factor  # Robust to outliers
+            )
+            
+            loss_semantic_depth_refine = loss_refine_x + loss_refine_y
+            log_dict['loss_semantic_depth_refine'] = loss_semantic_depth_refine.item()
+            loss += args.lambda_semantic_depth_refine * loss_semantic_depth_refine
+
         loss.backward()
         log_dict['loss'] = loss.item()
 
         iter_end.record()
+        torch.cuda.synchronize()
 
         with torch.no_grad():
             base_keys = ['loss'] if args.only_velodyne else ['loss', "loss_l1", "psnr"]
@@ -494,6 +794,37 @@ def training(args):
                     semantic_optimizer.step()
                 semantic_optimizer.zero_grad(set_to_none=True)
             torch.cuda.empty_cache()
+
+            if (
+                viewer is not None
+                and iteration in getattr(args, "rendering_iterations", [])
+            ):
+                """
+                Update viewer with current Gaussian attributes at specified rendering iterations.
+                
+                Extracts depth, intensity, and semantic features from Gaussians and passes them
+                to the viewer for visualization.
+                """
+                attribute_data = {}
+
+                # Depth: Euclidean distance from origin
+                depth_attr = torch.norm(gaussians.get_xyz, dim=1)
+                attribute_data["depth"] = depth_attr.detach().cpu().numpy()
+
+                # Intensity: Direct attribute from Gaussians
+                intensity_attr = getattr(gaussians, "get_intensity", None)
+                if torch.is_tensor(intensity_attr):
+                    attribute_data["intensity"] = intensity_attr.detach().cpu().numpy().reshape(-1)
+
+                # Semantic: Mean of semantic feature channels
+                semantic_attr = getattr(gaussians, "get_semantic_feature", None)
+                if torch.is_tensor(semantic_attr):
+                    attribute_data["semantic_mean"] = semantic_attr.mean(dim=1).detach().cpu().numpy()
+
+                try:
+                    viewer.update_gaussians(iteration, gaussians, attribute_data)
+                except Exception as exc:
+                    print(f"[Viewer] Update failed at iteration {iteration}: {exc}")
 
             if iteration % args.vis_step == 0 or iteration == 1:
                 other_img = []
@@ -567,6 +898,10 @@ def training(args):
                         {"state_dict": semantic_head.state_dict(), "iteration": iteration},
                         scene.model_path + "/ckpt/semantic_head_chkpnt" + str(iteration) + ".pth"
                     )
+        
+
+    if viewer is not None:
+        viewer.close()
 
 
 def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderArgs, log_dict, env_map=None, semantic_head=None):
@@ -633,20 +968,25 @@ def complete_eval(iteration, test_iterations, scene: Scene, renderFunc, renderAr
                     cam_back = config['cameras'][idx * 2 + 1]
 
                     if semantic_eval:
-                        depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano, semantic_pred_pano, gt_semantic_pano = \
+                        depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano, semantic_pred_pano, gt_semantic_pano, semantic_feature_pano = \
                             render_range_map(args, cam_front, cam_back, scene.gaussians, renderFunc, renderArgs, env_map, [h, w],
                                              render_semantic=True, semantic_head=semantic_head, semantic_ignore_index=semantic_ignore_index)
                     else:
                         depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano \
                             = render_range_map(args, cam_front, cam_back, scene.gaussians, renderFunc, renderArgs, env_map, [h, w])
+                        semantic_feature_pano = None
 
                     raydrop_pano_mask = torch.where(raydrop_pano > 0.5, 1, 0)
                     gt_raydrop_pano = torch.where(gt_depth_pano > 0, 0, 1)
 
                     if iteration == args.iterations:
                         savedir = os.path.join(args.model_path, "ray_drop_datasets")
-                        torch.save(torch.cat([raydrop_pano, intensity_sh_pano, depth_pano[[0]]]), os.path.join(savedir, f"render_{config['name']}", f"{cam_front.colmap_id:03d}.pt"))
-                        torch.save(torch.cat([gt_raydrop_pano, gt_intensity_pano, gt_depth_pano]), os.path.join(savedir, f"gt", f"{cam_front.colmap_id:03d}.pt"))
+                        # Save render data: [raydrop, intensity, depth, semantic_pred, semantic_feature (if available)]
+                        render_data = torch.cat([raydrop_pano, intensity_sh_pano, depth_pano[[0]], semantic_pred_pano])
+                        if semantic_eval and semantic_feature_pano is not None:
+                            render_data = torch.cat([render_data, semantic_feature_pano])
+                        torch.save(render_data, os.path.join(savedir, f"render_{config['name']}", f"{cam_front.colmap_id:03d}.pt"))
+                        torch.save(torch.cat([gt_raydrop_pano, gt_intensity_pano, gt_depth_pano, gt_semantic_pano]), os.path.join(savedir, f"gt", f"{cam_front.colmap_id:03d}.pt"))
 
                     depth_pano = depth_pano * (1.0 - raydrop_pano_mask)
                     intensity_sh_pano = intensity_sh_pano * (1.0 - raydrop_pano_mask)
@@ -740,7 +1080,22 @@ def refine():
     gt_dir = os.path.join(args.model_path, "ray_drop_datasets", "gt")
     train_dir = os.path.join(args.model_path, "ray_drop_datasets", f"render_train")
 
-    unet = UNet(in_channels=3, out_channels=1)
+    # Check if semantic feature is available
+    use_semantic = False
+    semantic_dim = 0
+    if getattr(args, "lambda_semantic", 0.0) > 0:
+        # Check first file to see if semantic feature is included
+        sample_files = list(os.listdir(train_dir))
+        if sample_files:
+            sample_data = torch.load(os.path.join(train_dir, sample_files[0]))
+            # Format: [raydrop, intensity, depth, semantic_pred, semantic_feature (optional)]
+            if sample_data.shape[0] > 4:
+                use_semantic = True
+                semantic_dim = sample_data.shape[0] - 4  # Subtract raydrop(1) + intensity(1) + depth(1) + semantic_pred(1)
+                print(f"[Refine] Semantic feature detected: dim={semantic_dim}, will use in UNet input")
+
+    in_channels = 3 + semantic_dim if use_semantic else 3
+    unet = UNet(in_channels=in_channels, out_channels=1)
     unet.cuda()
     unet.train()
 
@@ -749,8 +1104,15 @@ def refine():
 
     print("Preparing for Raydrop Refinemet ...")
     for data in tqdm(os.listdir(train_dir)):
-        raydrop_input = torch.load(os.path.join(train_dir, data)).unsqueeze(0)
-        raydrop_input_list.append(raydrop_input)
+        render_data = torch.load(os.path.join(train_dir, data))  # [3+1+semantic_dim, H, W] or [4, H, W]
+        # Extract: [raydrop, intensity, depth] + [semantic_feature (if available)]
+        if use_semantic and render_data.shape[0] > 4:
+            # [raydrop, intensity, depth, semantic_pred, semantic_feature]
+            unet_input = torch.cat([render_data[:3], render_data[4:]], dim=0).unsqueeze(0)  # [1, 3+semantic_dim, H, W]
+        else:
+            # [raydrop, intensity, depth]
+            unet_input = render_data[:3].unsqueeze(0)  # [1, 3, H, W]
+        raydrop_input_list.append(unet_input)
         gt_raydrop = torch.load(os.path.join(gt_dir, data))[[0]].unsqueeze(0)
         raydrop_gt_list.append(gt_raydrop)
 
@@ -828,6 +1190,79 @@ def refine_test():
     unet.cuda()
     unet.eval()
 
+    # Load semantic head if available
+    semantic_head = None
+    semantic_eval = (
+        getattr(args, "lambda_semantic", 0.0) > 0
+        and hasattr(args, "semantic_num_classes")
+        and args.semantic_num_classes is not None
+        and getattr(args, "semantic_dim", 0) > 0
+    )
+    
+    if semantic_eval:
+        # Try to load semantic head from checkpoint
+        semantic_head_checkpoint = os.path.join(args.model_path, "ckpt", f"semantic_head_chkpnt{args.iterations}.pth")
+        if not os.path.exists(semantic_head_checkpoint):
+            # Try to find any semantic head checkpoint
+            ckpt_dir = os.path.join(args.model_path, "ckpt")
+            if os.path.exists(ckpt_dir):
+                semantic_checkpoints = [f for f in os.listdir(ckpt_dir) if f.startswith("semantic_head_chkpnt") and f.endswith(".pth")]
+                if semantic_checkpoints:
+                    semantic_head_checkpoint = os.path.join(ckpt_dir, sorted(semantic_checkpoints)[-1])
+        
+        if os.path.exists(semantic_head_checkpoint):
+            from head.semantic_head import build_semantic_head
+            
+            head_type = getattr(args, "semantic_head_type", "conv")
+            norm_type = getattr(args, "semantic_norm_type", "bn")
+            if norm_type is None:
+                norm_type = "bn"
+            dropout_prob = getattr(args, "semantic_dropout", 0.1)
+            if dropout_prob is None:
+                dropout_prob = 0.0
+
+            semantic_kwargs = {
+                "norm_type": norm_type,
+                "dropout": dropout_prob,
+            }
+
+            if head_type.lower() in ("unet", "unet-style", "u-net"):
+                base_channels = getattr(args, "semantic_unet_base_channels", 64)
+                if base_channels is None:
+                    base_channels = 64
+                depth_value = getattr(args, "semantic_unet_depth", 3)
+                if depth_value is None:
+                    depth_value = 3
+                semantic_kwargs.update({
+                    "base_channels": base_channels,
+                    "depth": depth_value,
+                })
+            else:
+                hidden_cfg = getattr(args, "semantic_conv_hidden_dims", (128, 64))
+                if hidden_cfg is None:
+                    hidden_dims = [128, 64]
+                elif isinstance(hidden_cfg, (int, float)):
+                    hidden_dims = [int(hidden_cfg)]
+                else:
+                    hidden_dims = [int(dim) for dim in list(hidden_cfg)]
+                semantic_kwargs.update({
+                    "hidden_channels": hidden_dims,
+                })
+
+            semantic_head = build_semantic_head(
+                head_type=head_type,
+                in_channels=args.semantic_dim,
+                num_classes=args.semantic_num_classes,
+                **semantic_kwargs,
+            ).cuda()
+            semantic_state = torch.load(semantic_head_checkpoint, map_location="cuda")
+            semantic_head.load_state_dict(semantic_state["state_dict"])
+            semantic_head.eval()
+            print(f"[Refine Test] Loaded semantic head from {semantic_head_checkpoint}")
+        else:
+            semantic_eval = False
+            print(f"[Refine Test] Semantic head checkpoint not found, skipping semantic evaluation")
+
     for mode in ["train", "test"]:
         outdir = os.path.join(args.model_path, "eval", f"{mode}_refine_render")
         os.makedirs(outdir, exist_ok=True)
@@ -837,13 +1272,30 @@ def refine_test():
 
         test_input_list = []
         gt_list = []
+        semantic_pred_list = []
+        gt_semantic_list = []
         name_list = []
         print(f"Preparing for Refinemet {mode} ...")
         for data in tqdm(os.listdir(test_dir)):
-            raydrop_input = torch.load(os.path.join(test_dir, data)).unsqueeze(0)
-            test_input_list.append(raydrop_input)
-            gt_raydrop = torch.load(os.path.join(gt_dir, data)).unsqueeze(0)
-            gt_list.append(gt_raydrop)
+            render_data = torch.load(os.path.join(test_dir, data))  # [4+semantic_dim, H, W] or [4, H, W]: [raydrop, intensity, depth, semantic_pred, semantic_feature (optional)]
+            gt_data = torch.load(os.path.join(gt_dir, data))  # [4, H, W]: [gt_raydrop, gt_intensity, gt_depth, gt_semantic]
+            
+            # Extract data: [raydrop, intensity, depth] for UNet input
+            test_input_list.append(render_data[:3].unsqueeze(0))  # [1, 3, H, W]
+            gt_list.append(gt_data[:3].unsqueeze(0))  # [1, 3, H, W]
+            
+            # Extract semantic data if available
+            if semantic_eval and semantic_head is not None:
+                if render_data.shape[0] >= 4:
+                    semantic_pred_list.append(render_data[[3]].long().unsqueeze(0))  # [1, 1, H, W]
+                else:
+                    semantic_pred_list.append(None)
+                
+                if gt_data.shape[0] >= 4:
+                    gt_semantic_list.append(gt_data[[3]].long().unsqueeze(0))  # [1, 1, H, W]
+                else:
+                    gt_semantic_list.append(None)
+            
             name_list.append(data)
 
         test_input = torch.cat(test_input_list, dim=0).cuda().float().contiguous()  # [B, 3, H, W]
@@ -853,8 +1305,29 @@ def refine_test():
             RaydropMeter(),
             IntensityMeter(scale=1),
             DepthMeter(scale=args.scale_factor),
-            PointsMeter(scale=args.scale_factor, vfov=args.vfov)
+            PointsMeter(scale=args.scale_factor, vfov=args.vfov),
+            PointsMeter(scale=args.scale_factor, vfov=args.vfov),
         ]
+        
+        # Add semantic meter if semantic evaluation is enabled
+        semantic_meter = None
+        semantic_color_lut = None
+        if semantic_eval and semantic_head is not None:
+            semantic_ignore_index = getattr(args, "semantic_ignore_index", -1)
+            semantic_class_count = getattr(args, "semantic_num_classes", 0)
+            semantic_meter = SemanticMeter(num_classes=semantic_class_count, ignore_index=semantic_ignore_index)
+            
+            # Prepare semantic color LUT for visualization
+            color_table = getattr(args, "semantic_color_map", None)
+            semantic_color_base = torch.tensor(color_table, dtype=torch.float32) if color_table is not None else None
+            if semantic_color_base is None:
+                semantic_label_map = load_semantic_label_mapping(
+                    getattr(args, "semantic_label_map_path", None),
+                    semantic_ignore_index
+                )
+                semantic_color_lut = semantic_label_map.torch_color_lut(device="cuda")
+            else:
+                semantic_color_lut = semantic_color_base.to("cuda")
 
         with torch.no_grad():
             raydrop_refine = unet(test_input)
@@ -873,7 +1346,31 @@ def refine_test():
                         visualize_depth(depth_pano, scale_factor=args.scale_factor),
                         gt_intensity_pano.clamp(0, 1).repeat(3, 1, 1),
                         intensity_pano.clamp(0, 1).repeat(3, 1, 1), ]
-                grid = make_grid(grid, nrow=1, padding=0)
+
+                # Semantic evaluation and visualization
+                if semantic_eval and semantic_meter is not None:
+                    if semantic_pred_list[idx] is not None and gt_semantic_list[idx] is not None:
+                        semantic_pred = semantic_pred_list[idx]  # [1, 1, H, W]
+                        gt_semantic = gt_semantic_list[idx]  # [1, 1, H, W]
+                        
+                        # Flatten for meter update
+                        semantic_pred_flat = semantic_pred.squeeze(0).squeeze(0)  # [H, W]
+                        gt_semantic_flat = gt_semantic.squeeze(0).squeeze(0)  # [H, W]
+                        
+                        # Update semantic meter
+                        semantic_meter.update(semantic_pred_flat, gt_semantic_flat)
+                        
+                        # Colorize semantic predictions and GT for visualization
+                        if semantic_color_lut is not None:
+                            semantic_pred_color = colorize_semantic_tensor(
+                                semantic_pred_flat, semantic_color_lut, semantic_ignore_index
+                            )
+                            semantic_gt_color = colorize_semantic_tensor(
+                                gt_semantic_flat, semantic_color_lut, semantic_ignore_index
+                            )
+                            grid.extend([semantic_pred_color, semantic_gt_color])
+
+                grid = make_grid(grid, nrow=2, padding=0)
                 save_image(grid, os.path.join(outdir, name_list[idx].replace(".pt", ".png")))
                 save_ply(pano_to_lidar(depth_pano, args.vfov, (-180, 180)),
                          os.path.join(outdir, name_list[idx].replace(".pt", ".ply")))
@@ -894,13 +1391,27 @@ def refine_test():
             rmse_d, medae_d, lpips_loss_d, ssim_d, psnr_d = metrics[2].measure()
             C_D, F_score = metrics[3].measure().astype(float)
 
+            # Build metrics payload
+            metrics_payload = {
+                "split": f"{mode}",
+                "iteration": "refine",
+                "Ray drop": {"RMSE": RMSE, "Acc": Acc, "F1": F1},
+                "Point Cloud": {"C-D": C_D, "F-score": F_score},
+                "Depth": {"RMSE": rmse_d, "MedAE": medae_d, "LPIPS": lpips_loss_d, "SSIM": ssim_d, "PSNR": psnr_d},
+                "Intensity": {"RMSE": rmse_i, "MedAE": medae_i, "LPIPS": lpips_loss_i, "SSIM": ssim_i, "PSNR": psnr_i},
+            }
+            
+            # Add semantic metrics if available
+            # Note: Semantic evaluation requires semantic feature from rendering,
+            # which is not available in refine_test since it uses pre-saved data.
+            # To enable semantic evaluation, semantic feature needs to be included
+            # in the saved data or re-rendered with semantic feature.
+            if semantic_eval and semantic_meter is not None and semantic_meter.total_samples > 0:
+                semantic_acc, semantic_miou = semantic_meter.measure()
+                metrics_payload["Semantic"] = {"Acc": semantic_acc, "mIoU": semantic_miou}
+
             with open(os.path.join(outdir, "metrics.json"), "w") as f:
-                json.dump({"split": f"{mode}", "iteration": "refine",
-                           "Ray drop": {"RMSE": RMSE, "Acc": Acc, "F1": F1},
-                           "Point Cloud": {"C-D": C_D, "F-score": F_score},
-                           "Depth": {"RMSE": rmse_d, "MedAE": medae_d, "LPIPS": lpips_loss_d, "SSIM": ssim_d, "PSNR": psnr_d},
-                           "Intensity": {"RMSE": rmse_i, "MedAE": medae_i, "LPIPS": lpips_loss_i, "SSIM": ssim_i, "PSNR": psnr_i},
-                           }, f, indent=1)
+                json.dump(metrics_payload, f, indent=1)
 
 
 if __name__ == "__main__":
@@ -924,6 +1435,7 @@ if __name__ == "__main__":
     OmegaConf.update(args, "test_only", args_read.test_only)
     OmegaConf.update(args, "median_depth", args_read.median_depth)
 
+    args.model_path = os.path.join(args.model_path, f"seq_{args.sequence_id}", datetime.now().strftime("%Y%m%d_%H%M%S"))
     if os.path.exists(args.model_path) and not args.test_only and args.start_checkpoint is None:
         shutil.rmtree(args.model_path)
     os.makedirs(args.model_path, exist_ok=True)

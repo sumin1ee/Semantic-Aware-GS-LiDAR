@@ -35,6 +35,11 @@ render_static: false
 vis_step: 500
 start_checkpoint: null
 seed: 0
+use_viewer: false
+viewer_host: "0.0.0.0"
+viewer_port: 7007
+viewer_max_points: 2000000
+rendering_iterations: [0, 100, 500, 1000, 2000, 3000, 5000, 7000, 10000, 15000, 20000, 30000]
 
 # ModelParams
 sh_degree: 3
@@ -89,12 +94,12 @@ envmap_lr: 0.01
 
 time_split_frac: 0.5
 percent_dense: 0.01
-thresh_opa_prune: 0.005
+thresh_opa_prune: 0.02
 densification_interval: 200
 opacity_reset_interval: 3000
 densify_from_iter: 500
 densify_until_iter: 15_000
-densify_grad_threshold: 0.0002
+densify_grad_threshold: 0.0001
 densify_grad_abs_threshold: 0.0004
 densify_grad_t_threshold: 0.002
 densify_until_num_points: 3000000
@@ -123,7 +128,7 @@ lambda_v_smooth: 0.0
 semantic_dim: 32  # Dimension of semantic feature vector
 semantic_feature_lr: 0.001
 lambda_semantic: 1.0
-semantic_head_type: "conv"
+semantic_head_type: "unet"
 semantic_num_classes: null
 semantic_conv_hidden_dims: [128, 64]
 semantic_unet_base_channels: 64
@@ -134,3 +139,8 @@ semantic_norm_type: "bn"
 semantic_dropout: 0.1
 semantic_ignore_index: -1
 semantic_class_weights: null
+
+# Semantic-geometry/intensity coupling losses
+lambda_semantic_smooth: 0.00  # Smoothness within same semantic class
+lambda_semantic_edge: 0.00  # Edge alignment between semantic boundaries and depth/intensity edges
+lambda_semantic_consistency: 0.0  # Consistency of depth/intensity within same semantic class

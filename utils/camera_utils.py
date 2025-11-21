@@ -60,14 +60,13 @@ def loadCam(args, id, cam_info: CameraInfo, resolution_scale):
             semantic_values = semantic_values.reshape(-1)
             uvz = np.concatenate((uvz, semantic_values[:, None]), axis=1)
             pts_semantic = np.full([1, h, w], fill_value=-1, dtype=np.int64)
-
+        
         uvz = uvz[uvz[:, 0] >= -0.5]
         uvz = uvz[uvz[:, 0] < h - 0.5]
         uvz = uvz[uvz[:, 1] >= -0.5]
         uvz = uvz[uvz[:, 1] < w - 0.5]
         uv = uvz[:, :2]
         uv = np.around(uv).astype(int)
-
         for i in range(uv.shape[0]):
             x, y = uv[i]
             depth_value = uvz[i, 2]

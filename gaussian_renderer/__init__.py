@@ -187,11 +187,21 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
     if render_semantic:
         semantic_pred_pano = torch.full([1, h, w * 2], fill_value=semantic_ignore_index, device="cuda", dtype=torch.long)
         gt_semantic_pano = torch.full([1, h, w * 2], fill_value=semantic_ignore_index, device="cuda", dtype=torch.long)
+        semantic_feature_pano = None  # Will be initialized with semantic_dim
+
+    # Prepare semantic features for rendering
+    if render_semantic:
+        v = gaussians.get_inst_velocity
+        t_scale = gaussians.get_scaling_t.clamp_max(2)
+        semantic_feature = gaussians.get_semantic_feature  # [N, semantic_dim]
+        other = [t_scale, v, semantic_feature]
+    else:
+        other = []
 
     for idx, viewpoint in enumerate([cam_front, cam_back]):
         depth_gt = viewpoint.pts_depth
         intensity_gt = viewpoint.pts_intensity
-        render_pkg = renderFunc(viewpoint, gaussians, *renderArgs, env_map=env_map)
+        render_pkg = renderFunc(viewpoint, gaussians, *renderArgs, env_map=env_map, other=other)
 
         depth = render_pkg['depth']
         alpha = render_pkg['alpha']
@@ -222,12 +232,32 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
                     if high_mask.any():
                         gt_semantic[high_mask] = effective_ignore_index
 
-            if "semantic" in render_pkg and semantic_head is not None:
-                semantic_feature = render_pkg["semantic"].unsqueeze(0)
+            # Extract semantic feature from render_pkg['feature']
+            rendered_semantic_feature = None
+            if "feature" in render_pkg:
+                rendered_other = render_pkg["feature"]  # [S_other, H, W] = [t, v, semantic]
+                S_t = 1
+                S_v = 3
+                S_other = rendered_other.shape[0]
+                S_sem = S_other - S_t - S_v
+                if S_sem > 0:
+                    rendered_semantic_feature = rendered_other[S_t+S_v:S_t+S_v+S_sem]  # [semantic_dim, H, W]
+            
+            if rendered_semantic_feature is not None and semantic_head is not None:
+                semantic_feature = rendered_semantic_feature.unsqueeze(0)
                 semantic_logits = semantic_head(semantic_feature)
                 semantic_pred = semantic_logits.argmax(dim=1).squeeze(0)
+                # Debug: Check if all predictions are ignore_index
+                if semantic_pred.numel() > 0 and torch.all(semantic_pred == semantic_ignore_index):
+                    print(f"[Warning] All semantic predictions are ignore_index!")
+                    print(f"  semantic_logits shape: {semantic_logits.shape}")
+                    print(f"  semantic_logits min/max: {semantic_logits.min().item():.4f}/{semantic_logits.max().item():.4f}")
+                    print(f"  semantic_logits mean: {semantic_logits.mean().item():.4f}")
+                    print(f"  argmax unique values: {torch.unique(semantic_pred).cpu().numpy()}")
             else:
                 semantic_pred = torch.full_like(gt_semantic, fill_value=semantic_ignore_index)
+                if idx == 0:  # Only print once per frame pair
+                    print(f"[Warning] Semantic prediction skipped: rendered_semantic_feature is not None={rendered_semantic_feature is not None}, semantic_head is not None={semantic_head is not None}")
             semantic_pred_exp = semantic_pred.unsqueeze(0)
             gt_semantic_exp = gt_semantic.unsqueeze(0)
 
@@ -259,6 +289,11 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
             if render_semantic:
                 semantic_pred_pano[:, :, breaks[1]:breaks[2]] = semantic_pred_exp
                 gt_semantic_pano[:, :, breaks[1]:breaks[2]] = gt_semantic_exp
+                if rendered_semantic_feature is not None:
+                    if semantic_feature_pano is None:
+                        semantic_dim = rendered_semantic_feature.shape[0]
+                        semantic_feature_pano = torch.zeros([semantic_dim, h, w * 2], device="cuda")
+                    semantic_feature_pano[:, :, breaks[1]:breaks[2]] = rendered_semantic_feature
             continue
         else:
             depth_pano[:, :, breaks[2]:breaks[3]] = depth[:, :, 0:(breaks[3] - breaks[2])]
@@ -282,8 +317,15 @@ def render_range_map(args, cam_front: Camera, cam_back: Camera, gaussians, rende
 
                 gt_semantic_pano[:, :, breaks[2]:breaks[3]] = gt_semantic_exp[:, :, 0:(breaks[3] - breaks[2])]
                 gt_semantic_pano[:, :, breaks[0]:breaks[1]] = gt_semantic_exp[:, :, (w - breaks[1] + breaks[0]):w]
+                
+                if rendered_semantic_feature is not None:
+                    if semantic_feature_pano is None:
+                        semantic_dim = rendered_semantic_feature.shape[0]
+                        semantic_feature_pano = torch.zeros([semantic_dim, h, w * 2], device="cuda")
+                    semantic_feature_pano[:, :, breaks[2]:breaks[3]] = rendered_semantic_feature[:, :, 0:(breaks[3] - breaks[2])]
+                    semantic_feature_pano[:, :, breaks[0]:breaks[1]] = rendered_semantic_feature[:, :, (w - breaks[1] + breaks[0]):w]
 
     if render_semantic:
-        return depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano, semantic_pred_pano, gt_semantic_pano
+        return depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano, semantic_pred_pano, gt_semantic_pano, semantic_feature_pano
     else:
         return depth_pano, intensity_sh_pano, raydrop_pano, gt_depth_pano, gt_intensity_pano
