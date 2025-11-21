@@ -126,15 +126,4 @@ CUDA_VISIBLE_DEVICES=0 python train.py \
 source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/nuscenes \
 scene_name=scene-0103 \
 model_path=eval_output/nuscenes_reconstruction/scene-0103 \
---test_only
-```
-
-## 📜 BibTeX
-``` bibtex
-@inproceedings{jiang2025gslidar,
-  title={GS-LiDAR: Generating Realistic LiDAR Point Clouds with Panoramic Gaussian Splatting},
-  author={Jiang, Junzhe and Gu, Chun and Chen, Yurui and Zhang, Li},
-  booktitle={International Conference on Learning Representations (ICLR)},
-  year={2025}
-}
-```
+--test_only 
