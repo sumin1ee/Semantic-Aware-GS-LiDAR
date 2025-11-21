@@ -10,7 +10,6 @@ data
 output
 eval_output
 
-*.png
 *.out
 *.ply
 *.pdf
