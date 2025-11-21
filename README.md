@@ -3,7 +3,7 @@
 
 ## 🛠️ Pipeline
 <div align="center">
-  <img src="assets/overview.pdf"/>
+  <img src="assets/overview.png"/>
 </div><br/>
 
 ## Get started
