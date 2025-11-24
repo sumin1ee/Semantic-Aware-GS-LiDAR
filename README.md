@@ -76,13 +76,13 @@ Semantic-Aware-GS-LiDAR
 2. Select a scene (e.g. `scene-0103`) and update `configs/nuscenes_nvs.yaml`:
    ```bash
    scene_name: "scene-0103"
-   source_path: "/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/nuscenes"
+   source_path: "/path/to/Semantic-Aware-GS-LiDAR/data/nuscenes"
    ```
 3. Launch training:
    ```bash
    CUDA_VISIBLE_DEVICES=0 python train.py \
        --config configs/nuscenes_nvs.yaml \
-       source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/nuscenes \
+       source_path=/path/to/Semantic-Aware-GS-LiDAR/data/nuscenes \
        model_path=eval_output/nuscenes_reconstruction/scene-0103
    ```
 
@@ -94,14 +94,14 @@ The loader expects `nuscenes-devkit` and `pyquaternion`, which are included in `
 # SemanticKITTI
 CUDA_VISIBLE_DEVICES=0 python train.py \
 --config configs/semantickitti_nvs.yaml \
-source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/SemanticKITTI \
+source_path=/path/to/Semantic-Aware-GS-LiDAR/data/SemanticKITTI \
 sequence_id=00 \
 model_path=eval_output/semantickitti_reconstruction/seq00
 
 # nuScenes
 CUDA_VISIBLE_DEVICES=0 python train.py \
 --config configs/nuscenes_nvs.yaml \
-source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/nuscenes \
+source_path=/path/to/Semantic-Aware-GS-LiDAR/data/nuscenes \
 scene_name=scene-0103 \
 model_path=eval_output/nuscenes_reconstruction/scene-0103
 ```
@@ -115,7 +115,7 @@ You can also use the following command to evaluate using pre-trained checkpoints
 # SemanticKITTI
 CUDA_VISIBLE_DEVICES=0 python train.py \
 --config configs/semantickitti_nvs.yaml \
-source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/SemanticKITTI \
+source_path=/path/to/Semantic-Aware-GS-LiDAR/data/SemanticKITTI \
 sequence_id=00 \
 model_path=eval_output/semantickitti_reconstruction/seq00 \
 --test_only
@@ -123,7 +123,7 @@ model_path=eval_output/semantickitti_reconstruction/seq00 \
 # nuScenes
 CUDA_VISIBLE_DEVICES=0 python train.py \
 --config configs/nuscenes_nvs.yaml \
-source_path=/home/sumin/projects/ACV/Semantic-Aware-GS-LiDAR/data/nuscenes \
+source_path=/path/to/Semantic-Aware-GS-LiDAR/data/nuscenes \
 scene_name=scene-0103 \
 model_path=eval_output/nuscenes_reconstruction/scene-0103 \
 --test_only 
